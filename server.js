@@ -262,6 +262,14 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+function requireEmployee(req, res, next) {
+  if (!req.user) return res.status(401).json({ message: "Not authenticated" });
+  if (req.user.role === "admin")
+    return res.status(403).json({ message: "Employees only" });
+
+  next();
+}
+
 /* --------------------------
    USER endpoints
    - register-admin: caller becomes admin (used after client creates firebase user)
@@ -358,7 +366,7 @@ app.get("/api/employees/:id", authenticate, requireAdmin, async (req, res) => {
 });
 
 // GET employee profile for the signed-in employee (/api/employees/me)
-app.get("/api/employees/me", authenticate, async (req, res) => {
+app.get("/api/employees/me", authenticate, requireEmployee, async (req, res) => {
   try {
     const emp = await Employee.findOne({ firebaseUid: req.user.uid });
     if (!emp) return res.json({ employee: false });
@@ -392,8 +400,8 @@ app.delete("/api/employees/:id", authenticate, requireAdmin, async (req, res) =>
     await Employee.findByIdAndDelete(req.params.id);
     res.json({ message: "Employee Deleted" });
   } catch (err) {
-    console.error("DELETE /api/employees/:id err", err);
-    res.status(500).json({ message: "Failed to delete employee" });
+    console.error("GET /api/employees/me err:", err);
+    return res.status(500).json({ message: "Failed to fetch employee", error: err.message });
   }
 });
 
