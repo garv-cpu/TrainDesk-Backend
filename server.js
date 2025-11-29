@@ -105,9 +105,19 @@ const EmployeeSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
+const SubscriptionSchema = new mongoose.Schema({
+  userId: { type: String, required: true }, // firebase UID
+  planId: { type: String, required: true },
+  status: { type: String, enum: ["active", "expired", "cancelled"], default: "active" },
+  startDate: { type: Date, default: Date.now },
+  endDate: { type: Date, required: true },
+  orderId: { type: String }, // Cashfree order reference
+});
+
 const User = mongoose.model("User", UserSchema);
 const SOP = mongoose.model("SOP", SOPSchema);
 const Employee = mongoose.model("Employee", EmployeeSchema);
+const Subscription = mongoose.model("Subscription", SubscriptionSchema);
 
 // ---------- Keep-alive ----------
 app.get("/ping", (req, res) => res.json({ status: "active", time: new Date() }));
@@ -123,6 +133,93 @@ if (process.env.SERVER_URL) {
   });
 }
 
+// Cashfree
+app.post("/api/payments/create-order", authenticate, async (req, res) => {
+  try {
+    const { planId, amount } = req.body;
+
+    const orderId = "TD_" + Date.now();
+
+    const payload = {
+      order_id: orderId,
+      order_amount: amount,
+      order_currency: "INR",
+      customer_details: {
+        customer_id: req.user.uid,
+        customer_email: req.user.email,
+      },
+    };
+
+    const response = await fetch("https://sandbox.cashfree.com/pg/orders", {
+      method: "POST",
+      headers: {
+        "x-client-id": process.env.CF_APP_ID,
+        "x-client-secret": process.env.CF_SECRET,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json();
+
+    res.json({
+      payment_link: data.payment_link,
+    });
+  } catch (err) {
+    console.error("Cashfree order error:", err);
+    res.status(500).json({ message: "Payment order failed" });
+  }
+});
+
+// ------------------------------
+// CASHFREE WEBHOOK
+// ------------------------------
+app.post("/api/payments/webhook", async (req, res) => {
+  const { order_id, order_amount, payment_status, customer_details } = req.body;
+
+  if (payment_status !== "SUCCESS") return res.sendStatus(200);
+
+  const uid = customer_details.customer_id;
+  const planId = "pro"; // You can map based on amount
+
+  const endDate = new Date();
+  endDate.setMonth(endDate.getMonth() + 1); // 30 days validity
+
+  await Subscription.findOneAndUpdate(
+    { userId: uid },
+    {
+      userId: uid,
+      planId,
+      status: "active",
+      orderId: order_id,
+      startDate: new Date(),
+      endDate,
+    },
+    { upsert: true }
+  );
+
+  res.sendStatus(200);
+});
+
+app.get("/api/subscription/status", authenticate, async (req, res) => {
+  try {
+    const sub = await Subscription.findOne({ userId: req.user.uid });
+
+    if (!sub) return res.json({ active: false });
+
+    const isExpired = new Date() > sub.endDate;
+
+    res.json({
+      active: !isExpired,
+      planId: sub.planId,
+      expires: sub.endDate,
+    });
+  } catch (err) {
+    console.error("GET /subscription/status error", err);
+    res.status(500).json({ message: "Failed to fetch subscription" });
+  }
+});
+
 // ---------- Auth middleware ----------
 async function authenticate(req, res, next) {
   const authHeader = req.headers.authorization || "";
@@ -134,7 +231,7 @@ async function authenticate(req, res, next) {
   try {
     const decoded = await verifyFirebaseToken(idToken);
     // firebase securetoken decoded contains `user_id` (uid) and `email`
-    const uid = decoded.user_id || decoded.sub || decoded.uid;
+    const uid = decoded.user_id ?? decoded.sub;
     const email = decoded.email;
 
     if (!uid || !email) {
@@ -144,10 +241,11 @@ async function authenticate(req, res, next) {
     // Upsert user in Mongo if first-time
     let user = await User.findOne({ firebaseUid: uid });
     if (!user) {
+      // create user but don't assume staff/admin
       user = new User({ firebaseUid: uid, email, role: "staff" });
       await user.save();
-      console.log(`Auto-created user ${email} as staff`);
     }
+
 
     req.user = { uid, email, role: user.role, dbId: user._id };
     next();
@@ -263,7 +361,7 @@ app.get("/api/employees/:id", authenticate, requireAdmin, async (req, res) => {
 app.get("/api/employees/me", authenticate, async (req, res) => {
   try {
     const emp = await Employee.findOne({ firebaseUid: req.user.uid });
-    if (!emp) return res.status(404).json({ message: "Employee not registered" });
+    if (!emp) return res.json({ employee: false });
     res.json(emp);
   } catch (err) {
     console.error("GET /api/employees/me err", err);
