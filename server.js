@@ -34,6 +34,20 @@ const SOPSchema = new mongoose.Schema({
 
 const SOP = mongoose.model("SOP", SOPSchema);
 
+// ---------------------------------------------
+// EMPLOYEE MODEL
+// ---------------------------------------------
+const EmployeeSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  dept: { type: String, required: true },
+  role: { type: String, enum: ["owner", "manager", "staff"], default: "staff" },
+  status: { type: String, enum: ["active", "inactive"], default: "active" },
+  createdAt: { type: Date, default: Date.now },
+});
+
+const Employee = mongoose.model("Employee", EmployeeSchema);
+
 // --------------------------------------------------
 // KEEP-ALIVE ENDPOINT (important for cron job)
 // --------------------------------------------------
@@ -59,14 +73,65 @@ cron.schedule("*/14 * * * *", async () => {
 // ---------------------------------------------
 
 // ➤ GET all SOPs
+app.get("/api/employees", async (req, res) => {
+  try {
+    const employees = await Employee.find().sort({ createdAt: -1 });
+    res.json(employees);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch employees" });
+  }
+});
+
+app.get("/api/employees/:id", async (req, res) => {
+  try {
+    const emp = await Employee.findById(req.params.id);
+    if (!emp) return res.status(404).json({ message: "Employee not found" });
+    res.json(emp);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch employee" });
+  }
+});
+
+app.post("/api/employees", async (req, res) => {
+  try {
+    const employee = new Employee(req.body);
+    await employee.save();
+    res.json({ message: "Employee Added", employee });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to create employee" });
+  }
+});
+
+app.put("/api/employees/:id", async (req, res) => {
+  try {
+    const updated = await Employee.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ message: "Employee not found" });
+    res.json({ message: "Employee Updated", updated });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to update employee" });
+  }
+});
+
+app.delete("/api/employees/:id", async (req, res) => {
+  try {
+    await Employee.findByIdAndDelete(req.params.id);
+    res.json({ message: "Employee Deleted" });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to delete employee" });
+  }
+});
 
 // ➤ GET DASHBOARD STATS
 app.get("/api/stats", async (req, res) => {
   try {
+    const totalEmployees = await Employee.countDocuments();
     const totalSOPs = await SOP.countDocuments();
 
-    // Additional models later:
-    const totalEmployees = 42; 
+    // For now static → will replace later with real training module
     const activeTrainings = 12;
     const completedTrainings = 89;
 
@@ -81,6 +146,7 @@ app.get("/api/stats", async (req, res) => {
     res.status(500).json({ message: "Failed to fetch stats" });
   }
 });
+
 
 app.get("/api/sops", async (req, res) => {
   try {
