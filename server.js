@@ -196,6 +196,50 @@ const requireAdmin = (req, res, next) =>
 // ----------------------------------------------
 // PAYMENT: OPTION A (Create order → Payment link)
 // ----------------------------------------------
+app.post("/api/guest/payment-link", async (req, res) => {
+  try {
+    const { amount, name, email, phone } = req.body;
+
+    if (!email || !phone)
+      return res.status(400).json({ message: "Missing email or phone" });
+
+    const orderId = "TDG_" + Date.now();
+
+    const body = {
+      order_id: orderId,
+      order_amount: amount,
+      order_currency: "INR",
+      customer_details: {
+        customer_id: "guest_" + Date.now(),
+        customer_email: email,
+        customer_phone: phone,
+      },
+    };
+
+    const response = await fetch("https://api.cashfree.com/pg/orders", {
+      method: "POST",
+      headers: {
+        "x-client-id": process.env.CF_APP_ID,
+        "x-client-secret": process.env.CF_SECRET,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok)
+      return res.status(502).json({ message: "Cashfree error", raw: data });
+
+    return res.json({
+      payment_link:
+        data.payment_link || data.paymentLink || data.checkout_link || null,
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Payment creation failed" });
+  }
+});
+
 app.post("/create-payment-link", async (req, res) => {
   const { amount, customerId, customerEmail, customerPhone } = req.body;
 
