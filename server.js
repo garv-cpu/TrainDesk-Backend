@@ -59,6 +59,29 @@ cron.schedule("*/14 * * * *", async () => {
 // ---------------------------------------------
 
 // ➤ GET all SOPs
+
+// ➤ GET DASHBOARD STATS
+app.get("/api/stats", async (req, res) => {
+  try {
+    const totalSOPs = await SOP.countDocuments();
+
+    // Additional models later:
+    const totalEmployees = 42; 
+    const activeTrainings = 12;
+    const completedTrainings = 89;
+
+    res.json({
+      employees: totalEmployees,
+      activeTrainings,
+      completedTrainings,
+      pendingSOPs: totalSOPs
+    });
+
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch stats" });
+  }
+});
+
 app.get("/api/sops", async (req, res) => {
   try {
     const sops = await SOP.find().sort({ updated: -1 });
