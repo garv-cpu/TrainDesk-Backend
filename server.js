@@ -69,6 +69,9 @@ const Employee = mongoose.model("Employee", EmployeeSchema);
 app.get("/ping", (req, res) => {
   res.json({ status: "active", time: new Date() });
 });
+app.get("/ping2", (req, res) => {
+  res.json({ status: "active", time: new Date() });
+});
 
 // ping every 14 minutes to keep render awake (optional)
 if (process.env.SERVER_URL) {
