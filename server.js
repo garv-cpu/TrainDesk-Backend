@@ -11,13 +11,65 @@ import jwksClient from "jwks-rsa";
 dotenv.config();
 
 /*
-  ENV required:
+  Required ENV (minimum):
   - MONGO_URI
   - FIREBASE_PROJECT_ID
-  - SERVER_URL (optional, keep-alive)
+  - CF_APP_ID
+  - CF_SECRET
+  - (optional) FIREBASE_ADMIN_CERT or GOOGLE_APPLICATION_CREDENTIALS
+  - (optional) SERVER_URL
+  - PORT
 */
 
-// ---------- JWKS / Firebase token verification ----------
+if (!process.env.MONGO_URI) {
+  console.error("Missing MONGO_URI in environment - exiting.");
+  process.exit(1);
+}
+if (!process.env.FIREBASE_PROJECT_ID) {
+  console.error("Missing FIREBASE_PROJECT_ID in environment - exiting.");
+  process.exit(1);
+}
+if (!process.env.CF_APP_ID || !process.env.CF_SECRET) {
+  console.error("Missing CF_APP_ID or CF_SECRET in environment - exiting.");
+  process.exit(1);
+}
+
+const CF_CLIENT_ID = process.env.CF_APP_ID;
+const CF_CLIENT_SECRET = process.env.CF_SECRET;
+const CF_ENDPOINT = "https://api.cashfree.com/pg/orders"; // PRODUCTION
+
+// ------------ Optional firebase-admin init ------------
+let admin = null;
+let firebaseAdminInitialized = false;
+
+try {
+  if (process.env.FIREBASE_ADMIN_CERT || process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    admin = require("firebase-admin");
+
+    if (process.env.FIREBASE_ADMIN_CERT) {
+      const cert = JSON.parse(process.env.FIREBASE_ADMIN_CERT);
+      admin.initializeApp({
+        credential: admin.credential.cert(cert),
+        projectId: process.env.FIREBASE_PROJECT_ID,
+      });
+    } else {
+      admin.initializeApp({
+        credential: admin.credential.applicationDefault(),
+        projectId: process.env.FIREBASE_PROJECT_ID,
+      });
+    }
+    firebaseAdminInitialized = true;
+    console.log("✅ firebase-admin initialized");
+  } else {
+    console.log("ℹ️ firebase-admin not initialized");
+  }
+} catch (err) {
+  console.error("Failed to init firebase-admin:", err);
+  firebaseAdminInitialized = false;
+  admin = null;
+}
+
+// ------------ Firebase token verification (JWKS) ------------
 const jwksUri =
   "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com";
 
@@ -25,24 +77,19 @@ const client = jwksClient({
   jwksUri,
   timeout: 30000,
   cache: true,
-  cacheMaxEntries: 5,
+  cacheMaxEntries: 10,
   cacheMaxAge: 10 * 60 * 1000,
 });
 
 function getKey(header, callback) {
   client.getSigningKey(header.kid, (err, key) => {
     if (err) return callback(err);
-    const pubKey = key.getPublicKey();
-    callback(null, pubKey);
+    callback(null, key.getPublicKey());
   });
 }
 
 function verifyFirebaseToken(idToken) {
   return new Promise((resolve, reject) => {
-    if (!process.env.FIREBASE_PROJECT_ID) {
-      return reject(new Error("Missing FIREBASE_PROJECT_ID env var"));
-    }
-
     jwt.verify(
       idToken,
       getKey,
@@ -59,26 +106,21 @@ function verifyFirebaseToken(idToken) {
   });
 }
 
-// ---------- App init ----------
+// ------------ App init ------------
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
-// ---------- Mongo connect ----------
-if (!process.env.MONGO_URI) {
-  console.error("Missing MONGO_URI in env");
-  process.exit(1);
-}
-
+// ------------ Mongo connect ------------
 mongoose
-  .connect(process.env.MONGO_URI)
+  .connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log("MongoDB Connected"))
   .catch((err) => {
-    console.error("MongoDB connect error:", err);
+    console.error("Mongo error:", err);
     process.exit(1);
   });
 
-// ---------- Models ----------
+// ------------ Models ------------
 const UserSchema = new mongoose.Schema({
   firebaseUid: { type: String, required: true, unique: true },
   email: { type: String, required: true },
@@ -87,7 +129,7 @@ const UserSchema = new mongoose.Schema({
 });
 
 const SOPSchema = new mongoose.Schema({
-  ownerId: { type: String, required: true }, // firebase uid of admin/owner
+  ownerId: { type: String, required: true },
   title: { type: String, required: true },
   dept: { type: String, required: true },
   content: { type: String, required: true },
@@ -95,7 +137,7 @@ const SOPSchema = new mongoose.Schema({
 });
 
 const EmployeeSchema = new mongoose.Schema({
-  ownerId: { type: String, required: true }, // admin uid
+  ownerId: { type: String, required: true },
   firebaseUid: { type: String, required: true, unique: true },
   name: { type: String, required: true },
   email: { type: String, required: true },
@@ -106,12 +148,12 @@ const EmployeeSchema = new mongoose.Schema({
 });
 
 const SubscriptionSchema = new mongoose.Schema({
-  userId: { type: String, required: true }, // firebase UID
+  userId: { type: String, required: true },
   planId: { type: String, required: true },
   status: { type: String, enum: ["active", "expired", "cancelled"], default: "active" },
   startDate: { type: Date, default: Date.now },
   endDate: { type: Date, required: true },
-  orderId: { type: String }, // Cashfree order reference
+  orderId: { type: String },
 });
 
 const User = mongoose.model("User", UserSchema);
@@ -119,28 +161,60 @@ const SOP = mongoose.model("SOP", SOPSchema);
 const Employee = mongoose.model("Employee", EmployeeSchema);
 const Subscription = mongoose.model("Subscription", SubscriptionSchema);
 
-// ---------- Keep-alive ----------
+// ------------ Keep alive ------------
 app.get("/ping", (req, res) => res.json({ status: "active", time: new Date() }));
 
 if (process.env.SERVER_URL) {
   cron.schedule("*/14 * * * *", async () => {
     try {
-      console.log("🟢 Keep-alive ping executed");
+      console.log("Ping...");
       await fetch(process.env.SERVER_URL + "/ping");
-    } catch (err) {
-      console.log("Ping error:", err);
-    }
+    } catch {}
   });
 }
 
-// Cashfree
+// ------------ Auth middleware ------------
+async function authenticate(req, res, next) {
+  const header = req.headers.authorization || "";
+  if (!header.startsWith("Bearer "))
+    return res.status(401).json({ message: "Missing token" });
+
+  const token = header.split(" ")[1];
+
+  try {
+    const decoded = await verifyFirebaseToken(token);
+    const uid = decoded.user_id ?? decoded.sub;
+    const email = decoded.email;
+
+    let dbUser = await User.findOne({ firebaseUid: uid });
+    if (!dbUser) {
+      dbUser = new User({ firebaseUid: uid, email });
+      await dbUser.save();
+    }
+
+    req.user = { uid, email, role: dbUser.role };
+    next();
+  } catch (e) {
+    return res.status(401).json({ message: "Invalid token" });
+  }
+}
+
+const requireAdmin = (req, res, next) =>
+  req.user?.role === "admin"
+    ? next()
+    : res.status(403).json({ message: "Admin only" });
+
+// ----------------------------------------------
+// PAYMENT: OPTION A (Create order → Payment link)
+// ----------------------------------------------
 app.post("/api/payments/create-order", authenticate, async (req, res) => {
   try {
     const { planId, amount } = req.body;
+    if (!planId || !amount) return res.status(400).json({ message: "Missing data" });
 
     const orderId = "TD_" + Date.now();
 
-    const payload = {
+    const body = {
       order_id: orderId,
       order_amount: amount,
       order_currency: "INR",
@@ -150,186 +224,107 @@ app.post("/api/payments/create-order", authenticate, async (req, res) => {
       },
     };
 
-    const response = await fetch("https://sandbox.cashfree.com/pg/orders", {
+    const response = await fetch(CF_ENDPOINT, {
       method: "POST",
       headers: {
-        "x-client-id": process.env.CF_APP_ID,
-        "x-client-secret": process.env.CF_SECRET,
+        "x-client-id": CF_CLIENT_ID,
+        "x-client-secret": CF_CLIENT_SECRET,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(body),
     });
 
     const data = await response.json();
 
-    res.json({
-      payment_link: data.payment_link,
+    if (!response.ok)
+      return res.status(502).json({ message: "Cashfree error", raw: data });
+
+    return res.json({
+      orderId,
+      payment_link:
+        data.payment_link || data.paymentLink || data.checkout_link || null,
+      raw: data,
     });
   } catch (err) {
-    console.error("Cashfree order error:", err);
-    res.status(500).json({ message: "Payment order failed" });
+    res.status(500).json({ message: "Payment error" });
   }
 });
 
-// ------------------------------
-// CASHFREE WEBHOOK
-// ------------------------------
-app.post("/api/payments/webhook", async (req, res) => {
-  const { order_id, order_amount, payment_status, customer_details } = req.body;
+// (Webhook removed)
 
-  if (payment_status !== "SUCCESS") return res.sendStatus(200);
-
-  const uid = customer_details.customer_id;
-  const planId = "pro"; // You can map based on amount
-
-  const endDate = new Date();
-  endDate.setMonth(endDate.getMonth() + 1); // 30 days validity
-
-  await Subscription.findOneAndUpdate(
-    { userId: uid },
-    {
-      userId: uid,
-      planId,
-      status: "active",
-      orderId: order_id,
-      startDate: new Date(),
-      endDate,
-    },
-    { upsert: true }
-  );
-
-  res.sendStatus(200);
-});
-
+// ------------ Subscription - Check status ------------
 app.get("/api/subscription/status", authenticate, async (req, res) => {
   try {
     const sub = await Subscription.findOne({ userId: req.user.uid });
-
     if (!sub) return res.json({ active: false });
 
-    const isExpired = new Date() > sub.endDate;
-
     res.json({
-      active: !isExpired,
+      active: new Date() <= sub.endDate,
       planId: sub.planId,
       expires: sub.endDate,
     });
-  } catch (err) {
-    console.error("GET /subscription/status error", err);
-    res.status(500).json({ message: "Failed to fetch subscription" });
+  } catch {
+    res.status(500).json({ message: "Error" });
   }
 });
 
-// ---------- Auth middleware ----------
-async function authenticate(req, res, next) {
-  const authHeader = req.headers.authorization || "";
-  if (!authHeader.startsWith("Bearer ")) {
-    return res.status(401).json({ message: "Missing token" });
-  }
-  const idToken = authHeader.split(" ")[1];
-
-  try {
-    const decoded = await verifyFirebaseToken(idToken);
-    // firebase securetoken decoded contains `user_id` (uid) and `email`
-    const uid = decoded.user_id ?? decoded.sub;
-    const email = decoded.email;
-
-    if (!uid || !email) {
-      return res.status(401).json({ message: "Invalid token payload" });
-    }
-
-    // Upsert user in Mongo if first-time
-    let user = await User.findOne({ firebaseUid: uid });
-    if (!user) {
-      // create user but don't assume staff/admin
-      user = new User({ firebaseUid: uid, email, role: "staff" });
-      await user.save();
-    }
-
-
-    req.user = { uid, email, role: user.role, dbId: user._id };
-    next();
-  } catch (err) {
-    console.error("Token verification error:", err);
-    return res.status(401).json({ message: "Invalid token" });
-  }
-}
-
-// require admin
-function requireAdmin(req, res, next) {
-  if (!req.user) return res.status(401).json({ message: "Not authenticated" });
-  if (req.user.role !== "admin") return res.status(403).json({ message: "Admin access required" });
-  next();
-}
-
-function requireEmployee(req, res, next) {
-  if (!req.user) return res.status(401).json({ message: "Not authenticated" });
-  if (req.user.role === "admin")
-    return res.status(403).json({ message: "Employees only" });
-
-  next();
-}
-
-/* --------------------------
-   USER endpoints
-   - register-admin: caller becomes admin (used after client creates firebase user)
-   - me: return user (role)
----------------------------*/
-
-// Make the current authenticated user an admin (client calls this after creating a Firebase account)
+// ------------ USERS ------------
 app.post("/api/users/register-admin", authenticate, async (req, res) => {
   try {
-    const uid = req.user.uid;
-    const email = req.user.email;
-
-    // always upsert admin safely
     const user = await User.findOneAndUpdate(
-      { firebaseUid: uid },
-      { firebaseUid: uid, email, role: "admin" },
-      { new: true, upsert: true }
+      { firebaseUid: req.user.uid },
+      { role: "admin" },
+      { new: true }
     );
-
-    res.json({
-      message: "Registered as admin",
-      user
-    });
-
-  } catch (err) {
-    console.error("POST /api/users/register-admin err", err);
-    res.status(500).json({ message: "Failed to register admin" });
+    res.json({ message: "Registered admin", user });
+  } catch {
+    res.status(500).json({ message: "Error" });
   }
 });
 
-
-// return current user's profile (role etc)
 app.get("/api/users/me", authenticate, async (req, res) => {
   try {
-    const u = await User.findOne({ firebaseUid: req.user.uid });
-    if (!u) return res.status(404).json({ message: "User not found" });
-    res.json({ firebaseUid: u.firebaseUid, email: u.email, role: u.role });
-  } catch (err) {
-    console.error("GET /api/users/me err", err);
-    res.status(500).json({ message: "Failed to fetch user" });
+    const user = await User.findOne({ firebaseUid: req.user.uid });
+    res.json(user);
+  } catch {
+    res.status(500).json({ message: "Error" });
   }
 });
 
-/* --------------------------
-   EMPLOYEES (admin-only create/list/edit/delete)
-   Also an employee can fetch /api/employees/me to verify they exist
----------------------------*/
-
-// Create employee (admin): requires firebaseUid (created client-side) so we don't need service account
+// ------------ EMPLOYEES ------------
 app.post("/api/employees", authenticate, requireAdmin, async (req, res) => {
   try {
-    const { name, email, dept, role = "staff", status = "active", firebaseUid } = req.body;
-    if (!name || !email || !dept || !firebaseUid) {
-      return res.status(400).json({ message: "Missing required fields (name,email,dept,firebaseUid)" });
+    const { name, email, dept, role = "staff", status = "active" } = req.body;
+
+    if (!name || !email || !dept)
+      return res.status(400).json({ message: "Missing fields" });
+
+    let firebaseUid = null;
+
+    if (firebaseAdminInitialized) {
+      let user = null;
+      try {
+        user = await admin.auth().getUserByEmail(email);
+      } catch {}
+
+      if (!user) {
+        const tempPassword = Math.random().toString(36).slice(-10) + "Aa1!";
+        user = await admin.auth().createUser({ email, password: tempPassword });
+      }
+
+      firebaseUid = user.uid;
+    } else {
+      const existing = await User.findOne({ email });
+      if (!existing)
+        return res.status(400).json({
+          message:
+            "Firebase-admin not initialized. Create this user in Firebase first.",
+        });
+
+      firebaseUid = existing.firebaseUid;
     }
 
-    const exists = await Employee.findOne({ firebaseUid });
-    if (exists) return res.status(400).json({ message: "Employee already exists" });
-
-    const employee = new Employee({
+    const emp = new Employee({
       ownerId: req.user.uid,
       firebaseUid,
       name,
@@ -339,164 +334,38 @@ app.post("/api/employees", authenticate, requireAdmin, async (req, res) => {
       status,
     });
 
-    await employee.save();
-    res.json({ message: "Employee Added", employee });
+    await emp.save();
+    res.json({ message: "Employee added", emp });
   } catch (err) {
-    console.error("POST /api/employees err", err);
-    res.status(500).json({ message: "Failed to create employee" });
+    res.status(500).json({ message: "Error" });
   }
 });
 
-// GET employees (tenant scoped)
 app.get("/api/employees", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const employees = await Employee.find({ ownerId: req.user.uid }).sort({ createdAt: -1 });
-    res.json(employees);
-  } catch (err) {
-    console.error("GET /api/employees err", err);
-    res.status(500).json({ message: "Failed to fetch employees" });
-  }
+  const list = await Employee.find({ ownerId: req.user.uid }).sort({ createdAt: -1 });
+  res.json(list);
 });
 
-// GET single employee (admin)
-app.get("/api/employees/:id", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const emp = await Employee.findById(req.params.id);
-    if (!emp || emp.ownerId !== req.user.uid) return res.status(404).json({ message: "Employee not found" });
-    res.json(emp);
-  } catch (err) {
-    console.error("GET /api/employees/:id err", err);
-    res.status(500).json({ message: "Failed to fetch employee" });
-  }
-});
-
-// GET employee profile for the signed-in employee (/api/employees/me)
-app.get("/api/employees/me", authenticate, requireEmployee, async (req, res) => {
-  try {
-    const emp = await Employee.findOne({ firebaseUid: req.user.uid });
-    if (!emp) return res.json({ employee: false });
-    res.json(emp);
-  } catch (err) {
-    console.error("GET /api/employees/me err", err);
-    res.status(500).json({ message: "Failed to fetch employee" });
-  }
-});
-
-// Update employee (admin)
-app.put("/api/employees/:id", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const emp = await Employee.findById(req.params.id);
-    if (!emp || emp.ownerId !== req.user.uid) return res.status(404).json({ message: "Employee not found" });
-
-    const updated = await Employee.findByIdAndUpdate(req.params.id, req.body, { new: true });
-    res.json({ message: "Employee Updated", updated });
-  } catch (err) {
-    console.error("PUT /api/employees/:id err", err);
-    res.status(500).json({ message: "Failed to update employee" });
-  }
-});
-
-// Delete employee (admin)
-app.delete("/api/employees/:id", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const emp = await Employee.findById(req.params.id);
-    if (!emp || emp.ownerId !== req.user.uid) return res.status(404).json({ message: "Employee not found" });
-
-    await Employee.findByIdAndDelete(req.params.id);
-    res.json({ message: "Employee Deleted" });
-  } catch (err) {
-    console.error("GET /api/employees/me err:", err);
-    return res.status(500).json({ message: "Failed to fetch employee", error: err.message });
-  }
-});
-
-/* --------------------------
-   SOP CRUD (admin only)
----------------------------*/
-
+// ------------ SOP CRUD ------------
 app.post("/api/sops", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const { title, dept, content } = req.body;
-    if (!title || !dept || !content) return res.status(400).json({ message: "Missing fields" });
-
-    const sop = new SOP({ ownerId: req.user.uid, title, dept, content });
-    await sop.save();
-    res.json({ message: "SOP Created Successfully", sop });
-  } catch (err) {
-    console.error("POST /api/sops err", err);
-    res.status(500).json({ message: "Failed to create SOP" });
-  }
+  const { title, dept, content } = req.body;
+  const sop = new SOP({ title, dept, content, ownerId: req.user.uid });
+  await sop.save();
+  res.json({ message: "Created", sop });
 });
 
 app.get("/api/sops", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const sops = await SOP.find({ ownerId: req.user.uid }).sort({ updated: -1 });
-    res.json(sops);
-  } catch (err) {
-    console.error("GET /api/sops err", err);
-    res.status(500).json({ message: "Failed to fetch SOPs" });
-  }
+  const sops = await SOP.find({ ownerId: req.user.uid }).sort({ updated: -1 });
+  res.json(sops);
 });
 
-app.get("/api/sops/recent", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const sops = await SOP.find({ ownerId: req.user.uid }).sort({ updated: -1 }).limit(3);
-    res.json(sops);
-  } catch (err) {
-    console.error("GET /api/sops/recent err", err);
-    res.status(500).json({ message: "Failed to fetch recent SOPs" });
-  }
-});
-
-app.get("/api/sops/:id", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const sop = await SOP.findById(req.params.id);
-    if (!sop || sop.ownerId !== req.user.uid) return res.status(404).json({ message: "SOP not found" });
-    res.json(sop);
-  } catch (err) {
-    console.error("GET /api/sops/:id err", err);
-    res.status(500).json({ message: "Failed to fetch SOP" });
-  }
-});
-
-app.put("/api/sops/:id", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const sop = await SOP.findById(req.params.id);
-    if (!sop || sop.ownerId !== req.user.uid) return res.status(404).json({ message: "SOP not found" });
-    const updated = await SOP.findByIdAndUpdate(req.params.id, { ...req.body, updated: Date.now() }, { new: true });
-    res.json({ message: "SOP Updated", updated });
-  } catch (err) {
-    console.error("PUT /api/sops/:id err", err);
-    res.status(500).json({ message: "Failed to update SOP" });
-  }
-});
-
-app.delete("/api/sops/:id", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const sop = await SOP.findById(req.params.id);
-    if (!sop || sop.ownerId !== req.user.uid) return res.status(404).json({ message: "SOP not found" });
-    await SOP.findByIdAndDelete(req.params.id);
-    res.json({ message: "SOP Deleted" });
-  } catch (err) {
-    console.error("DELETE /api/sops/:id err", err);
-    res.status(500).json({ message: "Failed to delete SOP" });
-  }
-});
-
-/* --------------------------
-   STATS (admin only)
----------------------------*/
+// ------------ Stats ------------
 app.get("/api/stats", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const totalEmployees = await Employee.countDocuments({ ownerId: req.user.uid });
-    const totalSOPs = await SOP.countDocuments({ ownerId: req.user.uid });
-    res.json({ employees: totalEmployees, activeTrainings: 0, completedTrainings: 0, pendingSOPs: totalSOPs });
-  } catch (err) {
-    console.error("GET /api/stats err", err);
-    res.status(500).json({ message: "Failed to fetch stats" });
-  }
+  const employees = await Employee.countDocuments({ ownerId: req.user.uid });
+  const sops = await SOP.countDocuments({ ownerId: req.user.uid });
+  res.json({ employees, activeTrainings: 0, completedTrainings: 0, pendingSOPs: sops });
 });
 
-// ---------- Start ----------
+// ------------ Start server ------------
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
