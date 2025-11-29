@@ -98,9 +98,16 @@ app.post("/api/employees", async (req, res) => {
     await employee.save();
     res.json({ message: "Employee Added", employee });
   } catch (err) {
+
+    if (err.code === 11000) {
+      // Duplicate email error
+      return res.status(400).json({ message: "Email already exists" });
+    }
+
     res.status(500).json({ message: "Failed to create employee" });
   }
 });
+
 
 app.put("/api/employees/:id", async (req, res) => {
   try {
