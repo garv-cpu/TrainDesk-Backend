@@ -1,3 +1,4 @@
+// server.js
 import express from "express";
 import mongoose from "mongoose";
 import cors from "cors";
@@ -10,15 +11,13 @@ import jwksClient from "jwks-rsa";
 dotenv.config();
 
 /*
-  IMPORTANT ENV VARS:
+  ENV required:
   - MONGO_URI
-  - SERVER_URL (optional, used by keep-alive)
-  - FIREBASE_PROJECT_ID (your firebase project id, used as JWT audience)
-  - INIT_ADMINS (optional comma-separated list of emails that should be admins initially)
+  - FIREBASE_PROJECT_ID
+  - SERVER_URL (optional, keep-alive)
 */
 
 // ---------- JWKS / Firebase token verification ----------
-// Google's JWKS for securetoken (Firebase ID tokens)
 const jwksUri =
   "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com";
 
@@ -85,7 +84,6 @@ const UserSchema = new mongoose.Schema({
   email: { type: String, required: true },
   role: { type: String, enum: ["admin", "staff"], default: "staff" },
   createdAt: { type: Date, default: Date.now },
-  // optional ownerId for multi-level ownership if needed later
 });
 
 const SOPSchema = new mongoose.Schema({
@@ -126,7 +124,6 @@ if (process.env.SERVER_URL) {
 }
 
 // ---------- Auth middleware ----------
-// Authenticate: verify token (via JWKS) and upsert user in Mongo (first-time sign-in)
 async function authenticate(req, res, next) {
   const authHeader = req.headers.authorization || "";
   if (!authHeader.startsWith("Bearer ")) {
@@ -136,7 +133,7 @@ async function authenticate(req, res, next) {
 
   try {
     const decoded = await verifyFirebaseToken(idToken);
-    // decoded contains: uid, email, name, etc.
+    // firebase securetoken decoded contains `user_id` (uid) and `email`
     const uid = decoded.user_id || decoded.sub || decoded.uid;
     const email = decoded.email;
 
@@ -144,34 +141,15 @@ async function authenticate(req, res, next) {
       return res.status(401).json({ message: "Invalid token payload" });
     }
 
-    // Upsert user in Mongo: auto-create first time
+    // Upsert user in Mongo if first-time
     let user = await User.findOne({ firebaseUid: uid });
     if (!user) {
-      // If user's email is in INIT_ADMINS list, make admin
-      const initAdmins = (process.env.INIT_ADMINS || "")
-        .split(",")
-        .map((s) => s.trim().toLowerCase())
-        .filter(Boolean);
-
-      const role = initAdmins.includes(email.toLowerCase()) ? "admin" : "staff";
-
-      user = new User({
-        firebaseUid: uid,
-        email,
-        role,
-      });
+      user = new User({ firebaseUid: uid, email, role: "staff" });
       await user.save();
-      console.log(`Auto-created user ${email} as ${role}`);
+      console.log(`Auto-created user ${email} as staff`);
     }
 
-    // attach to request
-    req.user = {
-      uid,
-      email,
-      role: user.role,
-      dbId: user._id,
-    };
-
+    req.user = { uid, email, role: user.role, dbId: user._id };
     next();
   } catch (err) {
     console.error("Token verification error:", err);
@@ -179,30 +157,62 @@ async function authenticate(req, res, next) {
   }
 }
 
-// Require admin role middleware (reads req.user.role)
+// require admin
 function requireAdmin(req, res, next) {
   if (!req.user) return res.status(401).json({ message: "Not authenticated" });
   if (req.user.role !== "admin") return res.status(403).json({ message: "Admin access required" });
   next();
 }
 
-// ------------------ ROUTES ------------------
+/* --------------------------
+   USER endpoints
+   - register-admin: caller becomes admin (used after client creates firebase user)
+   - me: return user (role)
+---------------------------*/
 
-// Create employee (admin) - this does NOT create firebase auth user (client should handle invites).
-// If you want the server to create Firebase users, you'd need service account; avoided here.
+// Make the current authenticated user an admin (client calls this after creating a Firebase account)
+app.post("/api/users/register-admin", authenticate, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const email = req.user.email;
+
+    let user = await User.findOne({ firebaseUid: uid });
+    if (!user) {
+      user = new User({ firebaseUid: uid, email, role: "admin" });
+    } else {
+      user.role = "admin";
+    }
+    await user.save();
+    res.json({ message: "Registered as admin", user: { firebaseUid: uid, email, role: user.role } });
+  } catch (err) {
+    console.error("POST /api/users/register-admin err", err);
+    res.status(500).json({ message: "Failed to register admin" });
+  }
+});
+
+// return current user's profile (role etc)
+app.get("/api/users/me", authenticate, async (req, res) => {
+  try {
+    const u = await User.findOne({ firebaseUid: req.user.uid });
+    if (!u) return res.status(404).json({ message: "User not found" });
+    res.json({ firebaseUid: u.firebaseUid, email: u.email, role: u.role });
+  } catch (err) {
+    console.error("GET /api/users/me err", err);
+    res.status(500).json({ message: "Failed to fetch user" });
+  }
+});
+
+/* --------------------------
+   EMPLOYEES (admin-only create/list/edit/delete)
+   Also an employee can fetch /api/employees/me to verify they exist
+---------------------------*/
+
+// Create employee (admin): requires firebaseUid (created client-side) so we don't need service account
 app.post("/api/employees", authenticate, requireAdmin, async (req, res) => {
   try {
     const { name, email, dept, role = "staff", status = "active", firebaseUid } = req.body;
-
-    if (!name || !email || !dept) {
-      return res.status(400).json({ message: "Missing required fields (name,email,dept)" });
-    }
-
-    // firebaseUid optional — if client created the user in Firebase, pass firebaseUid to link
-    if (!firebaseUid) {
-      // if you don't have firebaseUid, generate a placeholder or require it.
-      // For now require firebaseUid to keep uniqueness guarantee:
-      return res.status(400).json({ message: "firebaseUid is required for employee creation" });
+    if (!name || !email || !dept || !firebaseUid) {
+      return res.status(400).json({ message: "Missing required fields (name,email,dept,firebaseUid)" });
     }
 
     const exists = await Employee.findOne({ firebaseUid });
@@ -237,6 +247,7 @@ app.get("/api/employees", authenticate, requireAdmin, async (req, res) => {
   }
 });
 
+// GET single employee (admin)
 app.get("/api/employees/:id", authenticate, requireAdmin, async (req, res) => {
   try {
     const emp = await Employee.findById(req.params.id);
@@ -248,6 +259,19 @@ app.get("/api/employees/:id", authenticate, requireAdmin, async (req, res) => {
   }
 });
 
+// GET employee profile for the signed-in employee (/api/employees/me)
+app.get("/api/employees/me", authenticate, async (req, res) => {
+  try {
+    const emp = await Employee.findOne({ firebaseUid: req.user.uid });
+    if (!emp) return res.status(404).json({ message: "Employee not registered" });
+    res.json(emp);
+  } catch (err) {
+    console.error("GET /api/employees/me err", err);
+    res.status(500).json({ message: "Failed to fetch employee" });
+  }
+});
+
+// Update employee (admin)
 app.put("/api/employees/:id", authenticate, requireAdmin, async (req, res) => {
   try {
     const emp = await Employee.findById(req.params.id);
@@ -261,6 +285,7 @@ app.put("/api/employees/:id", authenticate, requireAdmin, async (req, res) => {
   }
 });
 
+// Delete employee (admin)
 app.delete("/api/employees/:id", authenticate, requireAdmin, async (req, res) => {
   try {
     const emp = await Employee.findById(req.params.id);
@@ -274,7 +299,10 @@ app.delete("/api/employees/:id", authenticate, requireAdmin, async (req, res) =>
   }
 });
 
-// ---------- SOPs ----------
+/* --------------------------
+   SOP CRUD (admin only)
+---------------------------*/
+
 app.post("/api/sops", authenticate, requireAdmin, async (req, res) => {
   try {
     const { title, dept, content } = req.body;
@@ -344,7 +372,9 @@ app.delete("/api/sops/:id", authenticate, requireAdmin, async (req, res) => {
   }
 });
 
-// ---------- Stats ----------
+/* --------------------------
+   STATS (admin only)
+---------------------------*/
 app.get("/api/stats", authenticate, requireAdmin, async (req, res) => {
   try {
     const totalEmployees = await Employee.countDocuments({ ownerId: req.user.uid });
