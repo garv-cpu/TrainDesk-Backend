@@ -198,10 +198,12 @@ const requireAdmin = (req, res, next) =>
 // ----------------------------------------------
 app.post("/api/guest/payment-link", async (req, res) => {
   try {
-    const { amount, name, email, phone } = req.body;
+    const { amount, phone, email } = req.body;
 
     if (!email || !phone)
-      return res.status(400).json({ message: "Missing email or phone" });
+      return res
+        .status(400)
+        .json({ message: "Email and Phone are required" });
 
     const orderId = "TDG_" + Date.now();
 
@@ -226,19 +228,31 @@ app.post("/api/guest/payment-link", async (req, res) => {
       body: JSON.stringify(body),
     });
 
-    const data = await response.json();
+    const data = await response.json().catch(() => null);
 
-    if (!response.ok)
-      return res.status(502).json({ message: "Cashfree error", raw: data });
+    if (!response.ok || !data) {
+      console.log("💥 Cashfree error:", data);
+      return res.status(500).json({
+        message: "Cashfree API Error",
+        raw: data || "No response JSON",
+      });
+    }
 
     return res.json({
       payment_link:
-        data.payment_link || data.paymentLink || data.checkout_link || null,
+        data.payment_link ||
+        data.paymentLink ||
+        data.checkout_link ||
+        null,
     });
-  } catch (err) {
-    res.status(500).json({ message: "Payment creation failed" });
+  } catch (error) {
+    console.error(error);
+    return res
+      .status(500)
+      .json({ message: "Server Error", error: error.message });
   }
 });
+
 
 app.post("/create-payment-link", async (req, res) => {
   const { amount, customerId, customerEmail, customerPhone } = req.body;
