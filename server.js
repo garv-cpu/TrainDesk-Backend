@@ -250,6 +250,12 @@ app.post("/api/payments/create-order", authenticate, async (req, res) => {
   }
 });
 
+app.get("/api/employees/me", authenticate, async (req, res) => {
+  const emp = await Employee.findOne({ firebaseUid: req.user.uid });
+  if (!emp) return res.status(404).json({ message: "Not employee" });
+  res.json(emp);
+});
+
 // (Webhook removed)
 
 // ------------ Subscription - Check status ------------
