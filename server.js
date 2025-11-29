@@ -169,7 +169,7 @@ if (process.env.SERVER_URL) {
     try {
       console.log("Ping...");
       await fetch(process.env.SERVER_URL + "/ping");
-    } catch {}
+    } catch { }
   });
 }
 
@@ -311,7 +311,7 @@ app.post("/api/employees", authenticate, requireAdmin, async (req, res) => {
       let user = null;
       try {
         user = await admin.auth().getUserByEmail(email);
-      } catch {}
+      } catch { }
 
       if (!user) {
         const tempPassword = Math.random().toString(36).slice(-10) + "Aa1!";
@@ -359,6 +359,22 @@ app.post("/api/sops", authenticate, requireAdmin, async (req, res) => {
   await sop.save();
   res.json({ message: "Created", sop });
 });
+
+app.delete("/api/sops/:id", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const deleted = await SOP.findOneAndDelete({
+      _id: req.params.id,
+      ownerId: req.user.uid,
+    });
+
+    if (!deleted) return res.status(404).json({ message: "Not found" });
+
+    res.json({ message: "Deleted" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 
 app.get("/api/sops", authenticate, requireAdmin, async (req, res) => {
   const sops = await SOP.find({ ownerId: req.user.uid }).sort({ updated: -1 });
