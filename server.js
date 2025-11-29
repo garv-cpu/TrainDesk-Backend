@@ -282,19 +282,24 @@ app.post("/api/users/register-admin", authenticate, async (req, res) => {
     const uid = req.user.uid;
     const email = req.user.email;
 
-    let user = await User.findOne({ firebaseUid: uid });
-    if (!user) {
-      user = new User({ firebaseUid: uid, email, role: "admin" });
-    } else {
-      user.role = "admin";
-    }
-    await user.save();
-    res.json({ message: "Registered as admin", user: { firebaseUid: uid, email, role: user.role } });
+    // always upsert admin safely
+    const user = await User.findOneAndUpdate(
+      { firebaseUid: uid },
+      { firebaseUid: uid, email, role: "admin" },
+      { new: true, upsert: true }
+    );
+
+    res.json({
+      message: "Registered as admin",
+      user
+    });
+
   } catch (err) {
     console.error("POST /api/users/register-admin err", err);
     res.status(500).json({ message: "Failed to register admin" });
   }
 });
+
 
 // return current user's profile (role etc)
 app.get("/api/users/me", authenticate, async (req, res) => {
