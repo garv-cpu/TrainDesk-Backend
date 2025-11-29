@@ -7,6 +7,7 @@ import cron from "node-cron";
 import fetch from "node-fetch";
 import jwt from "jsonwebtoken";
 import jwksClient from "jwks-rsa";
+import admin from "firebase-admin";
 
 dotenv.config();
 
@@ -39,35 +40,23 @@ const CF_CLIENT_SECRET = process.env.CF_SECRET;
 const CF_ENDPOINT = "https://api.cashfree.com/pg/orders"; // PRODUCTION
 
 // ------------ Optional firebase-admin init ------------
-let admin = null;
 let firebaseAdminInitialized = false;
 
 try {
-  if (process.env.FIREBASE_ADMIN_CERT || process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-    admin = require("firebase-admin");
+    const serviceAccount = JSON.parse(process.env.FIREBASE_ADMIN_CERT);
 
-    if (process.env.FIREBASE_ADMIN_CERT) {
-      const cert = JSON.parse(process.env.FIREBASE_ADMIN_CERT);
-      admin.initializeApp({
-        credential: admin.credential.cert(cert),
-        projectId: process.env.FIREBASE_PROJECT_ID,
-      });
-    } else {
-      admin.initializeApp({
-        credential: admin.credential.applicationDefault(),
-        projectId: process.env.FIREBASE_PROJECT_ID,
-      });
+    if (!admin.apps.length) {
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount),
+        });
     }
+
     firebaseAdminInitialized = true;
-    console.log("✅ firebase-admin initialized");
-  } else {
-    console.log("ℹ️ firebase-admin not initialized");
-  }
+    console.log("✅ Firebase Admin initialized");
 } catch (err) {
-  console.error("Failed to init firebase-admin:", err);
-  firebaseAdminInitialized = false;
-  admin = null;
+    console.log("ℹ️ firebase-admin not initialized (service account missing)");
 }
+
 
 // ------------ Firebase token verification (JWKS) ------------
 const jwksUri =
@@ -207,47 +196,36 @@ const requireAdmin = (req, res, next) =>
 // ----------------------------------------------
 // PAYMENT: OPTION A (Create order → Payment link)
 // ----------------------------------------------
-app.post("/api/payments/create-order", authenticate, async (req, res) => {
-  try {
-    const { planId, amount } = req.body;
-    if (!planId || !amount) return res.status(400).json({ message: "Missing data" });
+app.post("/create-payment-link", async (req, res) => {
+  const { amount, customerId, customerEmail, customerPhone } = req.body;
 
-    const orderId = "TD_" + Date.now();
+  const payload = {
+    order_id: "order_" + Date.now(),
+    order_amount: amount,
+    order_currency: "INR",
+    customer_details: {
+      customer_id: customerId,
+      customer_email: customerEmail,
+      customer_phone: customerPhone,
+    },
+    order_meta: {
+      return_url: "https://train-desk.vercel.app/payment-success?order_id={order_id}"
+    }
+  };
 
-    const body = {
-      order_id: orderId,
-      order_amount: amount,
-      order_currency: "INR",
-      customer_details: {
-        customer_id: req.user.uid,
-        customer_email: req.user.email,
-      },
-    };
+  const response = await fetch("https://api.cashfree.com/pg/orders", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-client-id": process.env.CF_CLIENT_ID,
+      "x-client-secret": process.env.CF_CLIENT_SECRET,
+      "x-api-version": "2022-09-01",
+    },
+    body: JSON.stringify(payload)
+  });
 
-    const response = await fetch(CF_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "x-client-id": CF_CLIENT_ID,
-        "x-client-secret": CF_CLIENT_SECRET,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok)
-      return res.status(502).json({ message: "Cashfree error", raw: data });
-
-    return res.json({
-      orderId,
-      payment_link:
-        data.payment_link || data.paymentLink || data.checkout_link || null,
-      raw: data,
-    });
-  } catch (err) {
-    res.status(500).json({ message: "Payment error" });
-  }
+  const data = await response.json();
+  res.json(data);
 });
 
 app.get("/api/employees/me", authenticate, async (req, res) => {
@@ -256,23 +234,6 @@ app.get("/api/employees/me", authenticate, async (req, res) => {
   res.json(emp);
 });
 
-// (Webhook removed)
-
-// ------------ Subscription - Check status ------------
-app.get("/api/subscription/status", authenticate, async (req, res) => {
-  try {
-    const sub = await Subscription.findOne({ userId: req.user.uid });
-    if (!sub) return res.json({ active: false });
-
-    res.json({
-      active: new Date() <= sub.endDate,
-      planId: sub.planId,
-      expires: sub.endDate,
-    });
-  } catch {
-    res.status(500).json({ message: "Error" });
-  }
-});
 
 // ------------ USERS ------------
 app.post("/api/users/register-admin", authenticate, async (req, res) => {
