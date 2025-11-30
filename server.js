@@ -43,18 +43,18 @@ const CF_ENDPOINT = "https://api.cashfree.com/pg/orders"; // PRODUCTION
 let firebaseAdminInitialized = false;
 
 try {
-    const serviceAccount = JSON.parse(process.env.FIREBASE_ADMIN_CERT);
+  const serviceAccount = JSON.parse(process.env.FIREBASE_ADMIN_CERT);
 
-    if (!admin.apps.length) {
-        admin.initializeApp({
-            credential: admin.credential.cert(serviceAccount),
-        });
-    }
+  if (!admin.apps.length) {
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+    });
+  }
 
-    firebaseAdminInitialized = true;
-    console.log("✅ Firebase Admin initialized");
+  firebaseAdminInitialized = true;
+  console.log("✅ Firebase Admin initialized");
 } catch (err) {
-    console.log("ℹ️ firebase-admin not initialized (service account missing)");
+  console.log("ℹ️ firebase-admin not initialized (service account missing)");
 }
 
 
@@ -165,19 +165,25 @@ if (process.env.SERVER_URL) {
 // ------------ Auth middleware ------------
 async function authenticate(req, res, next) {
   const header = req.headers.authorization || "";
-  if (!header.startsWith("Bearer "))
+  if (!header.startsWith("Bearer ")) {
     return res.status(401).json({ message: "Missing token" });
+  }
 
   const token = header.split(" ")[1];
 
   try {
     const decoded = await verifyFirebaseToken(token);
+
     const uid = decoded.user_id ?? decoded.sub;
     const email = decoded.email;
 
     let dbUser = await User.findOne({ firebaseUid: uid });
     if (!dbUser) {
-      dbUser = new User({ firebaseUid: uid, email });
+      dbUser = new User({
+        firebaseUid: uid,
+        email,
+        role: "user",
+      });
       await dbUser.save();
     }
 
@@ -187,6 +193,7 @@ async function authenticate(req, res, next) {
     return res.status(401).json({ message: "Invalid token" });
   }
 }
+
 
 const requireAdmin = (req, res, next) =>
   req.user?.role === "admin"
@@ -398,6 +405,21 @@ app.delete("/api/sops/:id", authenticate, requireAdmin, async (req, res) => {
 app.get("/api/sops", authenticate, requireAdmin, async (req, res) => {
   const sops = await SOP.find({ ownerId: req.user.uid }).sort({ updated: -1 });
   res.json(sops);
+});
+
+app.get("/api/sops/:id", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const sop = await SOP.findOne({
+      _id: req.params.id,
+      ownerId: req.user.uid,
+    });
+
+    if (!sop) return res.status(404).json({ message: "SOP not found" });
+
+    res.json(sop);
+  } catch (error) {
+    res.status(500).json({ message: "Server error" });
+  }
 });
 
 // ------------ Stats ------------
