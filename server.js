@@ -381,6 +381,40 @@ app.post("/api/employees", authenticate, requireAdmin, async (req, res) => {
   }
 });
 
+// DELETE EMPLOYEE
+app.delete("/api/employees/:id", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const deleted = await Employee.findOneAndDelete({
+      _id: req.params.id,
+      ownerId: req.user.uid,
+    });
+
+    if (!deleted) return res.status(404).json({ message: "Employee not found" });
+
+    res.json({ message: "Employee deleted" });
+  } catch (err) {
+    console.error("Delete employee error:", err);
+    res.status(500).json({ message: "Server error while deleting employee" });
+  }
+});
+
+// UPDATE EMPLOYEE
+app.put("/api/employees/:id", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const updated = await Employee.findOneAndUpdate(
+      { _id: req.params.id, ownerId: req.user.uid },
+      req.body,
+      { new: true }
+    );
+
+    if (!updated) return res.status(404).json({ message: "Employee not found" });
+
+    res.json({ message: "Employee updated", employee: updated });
+  } catch (err) {
+    console.error("Update employee error:", err);
+    res.status(500).json({ message: "Server error while updating employee" });
+  }
+});
 
 app.get("/api/employees", authenticate, requireAdmin, async (req, res) => {
   const list = await Employee.find({ ownerId: req.user.uid }).sort({ createdAt: -1 });
