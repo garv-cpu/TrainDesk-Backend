@@ -293,11 +293,27 @@ app.post("/create-payment-link", async (req, res) => {
   res.json(data);
 });
 
+// GET /api/employees/me
 app.get("/api/employees/me", authenticate, async (req, res) => {
-  const emp = await Employee.findOne({ firebaseUid: req.user.uid });
-  if (!emp) return res.status(404).json({ message: "Not employee" });
-  res.json(emp);
+  try {
+    const emp = await Employee.findOne({ firebaseUid: req.user.uid });
+
+    if (!emp)
+      return res.status(404).json({ message: "Employee not found" });
+
+    if (emp.status !== "active")
+      return res.status(403).json({ message: "Your account is inactive" });
+
+    // Prevent admin from using employee login
+    if (emp.role === "admin")
+      return res.status(403).json({ message: "Admins cannot use employee login" });
+
+    res.json(emp);
+  } catch (err) {
+    res.status(500).json({ message: "Error verifying employee" });
+  }
 });
+
 
 
 // ------------ USERS ------------
