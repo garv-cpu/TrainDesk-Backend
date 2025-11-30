@@ -336,6 +336,37 @@ app.delete("/api/sops/:id", authenticate, requireAdmin, async (req, res) => {
 });
 
 /* ----------------------------------------
+   EMPLOYEE: GET SOP LIST
+---------------------------------------- */
+app.get("/api/employee/sops", authenticate, async (req, res) => {
+  const emp = await Employee.findOne({ firebaseUid: req.user.firebaseUid });
+  if (!emp) return res.status(404).json({ message: "Employee not found" });
+
+  const sops = await SOP.find({
+    ownerId: emp.ownerId,
+  }).sort({ updated: -1 });
+
+  res.json(sops);
+});
+
+/* ----------------------------------------
+   EMPLOYEE: GET SINGLE SOP
+---------------------------------------- */
+app.get("/api/employee/sops/:id", authenticate, async (req, res) => {
+  const emp = await Employee.findOne({ firebaseUid: req.user.firebaseUid });
+  if (!emp) return res.status(404).json({ message: "Employee not found" });
+
+  const sop = await SOP.findOne({
+    _id: req.params.id,
+    ownerId: emp.ownerId,
+  });
+
+  if (!sop) return res.status(404).json({ message: "SOP not found" });
+
+  res.json(sop);
+});
+
+/* ----------------------------------------
    STATS
 ---------------------------------------- */
 app.get("/api/stats", authenticate, requireAdmin, async (req, res) => {
