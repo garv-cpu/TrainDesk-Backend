@@ -415,6 +415,24 @@ app.post("/api/sops", authenticate, requireAdmin, async (req, res) => {
   res.json({ message: "Created", sop });
 });
 
+app.get("/api/sops/:id", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const sop = await SOP.findOne({
+      _id: req.params.id,
+      ownerId: req.user.uid,
+    });
+
+    if (!sop) {
+      return res.status(404).json({ message: "SOP not found" });
+    }
+
+    res.json(sop);
+  } catch (err) {
+    console.error("View SOP error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 app.delete("/api/sops/:id", authenticate, requireAdmin, async (req, res) => {
   try {
     const deleted = await SOP.findOneAndDelete({
