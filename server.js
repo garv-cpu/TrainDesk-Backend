@@ -331,19 +331,28 @@ app.post("/api/employees", authenticate, requireAdmin, async (req, res) => {
     if (!name || !email || !dept)
       return res.status(400).json({ message: "Missing fields" });
 
+    // Fetch ADMIN INFO
+    const adminRecord = await Employee.findOne({ firebaseUid: req.user.uid });
+    const adminName = adminRecord?.name || "Admin";
+
+    // Generate temp password: adminName + randomNumber
+    const cleanedName = adminName.replace(/\s+/g, ""); // remove spaces
+    const tempPassword = cleanedName + Math.floor(1000 + Math.random() * 9000);
+
     let firebaseUid = null;
-    let tempPassword = null;
 
     if (firebaseAdminInitialized) {
       let user = null;
 
       try {
         user = await admin.auth().getUserByEmail(email);
-      } catch { }
+      } catch {}
 
       if (!user) {
-        tempPassword = Math.random().toString(36).slice(-8) + "Aa1!";
-        user = await admin.auth().createUser({ email, password: tempPassword });
+        user = await admin.auth().createUser({
+          email,
+          password: tempPassword,
+        });
       }
 
       firebaseUid = user.uid;
@@ -373,13 +382,14 @@ app.post("/api/employees", authenticate, requireAdmin, async (req, res) => {
     res.json({
       message: "Employee added",
       emp,
-      tempPassword, // <--- IMPORTANT
+      tempPassword, // return to frontend
     });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Error creating employee" });
   }
 });
+
 
 // DELETE EMPLOYEE
 app.delete("/api/employees/:id", authenticate, requireAdmin, async (req, res) => {
