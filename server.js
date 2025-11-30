@@ -332,27 +332,29 @@ app.post("/api/employees", authenticate, requireAdmin, async (req, res) => {
       return res.status(400).json({ message: "Missing fields" });
 
     let firebaseUid = null;
+    let tempPassword = null;
 
     if (firebaseAdminInitialized) {
       let user = null;
+
       try {
         user = await admin.auth().getUserByEmail(email);
       } catch { }
 
       if (!user) {
-        const tempPassword = Math.random().toString(36).slice(-10) + "Aa1!";
+        tempPassword = Math.random().toString(36).slice(-8) + "Aa1!";
         user = await admin.auth().createUser({ email, password: tempPassword });
       }
 
       firebaseUid = user.uid;
     } else {
       const existing = await User.findOne({ email });
-      if (!existing)
+      if (!existing) {
         return res.status(400).json({
           message:
             "Firebase-admin not initialized. Create this user in Firebase first.",
         });
-
+      }
       firebaseUid = existing.firebaseUid;
     }
 
@@ -367,16 +369,43 @@ app.post("/api/employees", authenticate, requireAdmin, async (req, res) => {
     });
 
     await emp.save();
-    res.json({ message: "Employee added", emp });
+
+    res.json({
+      message: "Employee added",
+      emp,
+      tempPassword, // <--- IMPORTANT
+    });
   } catch (err) {
-    res.status(500).json({ message: "Error" });
+    console.error(err);
+    res.status(500).json({ message: "Error creating employee" });
   }
 });
+
 
 app.get("/api/employees", authenticate, requireAdmin, async (req, res) => {
   const list = await Employee.find({ ownerId: req.user.uid }).sort({ createdAt: -1 });
   res.json(list);
 });
+
+// DELETE SOP
+app.delete("/api/sops/:id", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const deleted = await SOP.findOneAndDelete({
+      _id: req.params.id,
+      ownerId: req.user.uid
+    });
+
+    if (!deleted) {
+      return res.status(404).json({ message: "SOP not found" });
+    }
+
+    res.json({ message: "SOP deleted successfully" });
+  } catch (err) {
+    console.error("Delete SOP error:", err);
+    res.status(500).json({ message: "Server error while deleting SOP" });
+  }
+});
+
 
 // ------------ SOP CRUD ------------
 app.post("/api/sops", authenticate, requireAdmin, async (req, res) => {
