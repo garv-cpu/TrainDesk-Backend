@@ -991,34 +991,50 @@ app.get("/api/training/:id", authenticate, async (req, res) => {
 });
 
 // GET employee progress for a video
-app.get("/api/employee/progress/:videoId", authenticate, async (req, res) => {
+app.get("/api/employee/progress", authenticate, async (req, res) => {
   try {
-    const progress = await EmployeeProgress.findOne({
-      employeeId: req.user.firebaseUid,
-      videoId: req.params.videoId,
-    });
+    const employeeId = req.user.firebaseUid;
 
-    res.json(progress || { completed: false });
+    let progress = await EmployeeProgress.find({ employeeId });
+
+    // Convert ObjectId to string so frontend can match video._id
+    progress = progress.map((p) => ({
+      ...p._doc,
+      videoId: p.videoId.toString(),
+    }));
+
+    res.json(progress);
   } catch (err) {
-    res.status(500).json({ message: "Cannot load progress" });
+    console.error("Progress fetch error:", err);
+    res.status(500).json({ message: "Failed to load progress" });
   }
 });
+
 // SAVE employee progress
 app.post("/api/employee/progress", authenticate, async (req, res) => {
   try {
     const { videoId, completed } = req.body;
 
-    const progress = await EmployeeProgress.findOneAndUpdate(
-      { employeeId: req.user.firebaseUid, videoId },
-      { completed },
+    const employeeId = req.user.firebaseUid;
+
+    const updated = await EmployeeProgress.findOneAndUpdate(
+      { employeeId, videoId: String(videoId) },   // ensure string
+      {
+        employeeId,
+        videoId: String(videoId),
+        completed,
+        updated: new Date(),
+      },
       { upsert: true, new: true }
     );
 
-    res.json(progress);
+    res.json(updated);
   } catch (err) {
+    console.error("Progress save error:", err);
     res.status(500).json({ message: "Failed to save progress" });
   }
 });
+
 // SAVE quiz score
 app.post("/api/employee/score", authenticate, async (req, res) => {
   try {
