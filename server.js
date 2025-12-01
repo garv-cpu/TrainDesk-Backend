@@ -1217,6 +1217,52 @@ app.delete("/api/sops/:id", authenticate, requireAdmin, async (req, res) => {
 /* ----------------------------------------
    ADMIN DASHBOARD STATS
 ---------------------------------------- */
+
+app.get("/api/stats", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const ownerId = req.user.firebaseUid;
+
+    // EMPLOYEES
+    const employees = await Employee.countDocuments({ ownerId });
+
+    // ACTIVE TRAININGS (videos created by admin)
+    const activeTrainings = await TrainingVideo.countDocuments({
+      ownerId,
+      status: "active",
+    });
+
+    // ⭐ FIX: COMPLETED TRAININGS (by employees)
+    const completedTrainings = await EmployeeTrainingProgress.countDocuments({
+      ownerId,
+      completed: true,
+    });
+
+    // SOP TOTALS
+    const totalSops = await SOP.countDocuments({ ownerId });
+
+    // COMPLETED SOPs by employees
+    const completedSOPs = await EmployeeSOPProgress.countDocuments({
+      ownerId,
+      completed: true,
+    });
+
+    // Remaining SOPs
+    const pendingSOPs =
+      totalSops - completedSOPs < 0 ? 0 : totalSops - completedSOPs;
+
+    res.json({
+      employees,
+      activeTrainings,
+      completedTrainings, // ⭐ FIXED
+      completedSOPs,
+      pendingSOPs,
+    });
+  } catch (err) {
+    console.error("Stats error:", err);
+    res.status(500).json({ message: "Failed to fetch stats" });
+  }
+});
+
 app.get("/api/stats", authenticate, requireAdmin, async (req, res) => {
   try {
     const ownerId = req.user.firebaseUid;
