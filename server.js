@@ -286,11 +286,44 @@ app.get("/api/cloudinary-signature", (req, res) => {
 });
 
 /* ----------------------------------------
+   🔵 REQUIRED BY YOUR FRONTEND
+   GET ALL LOGS  (ActivityFeed.jsx)
+---------------------------------------- */
+app.get("/api/logs", authenticate, async (req, res) => {
+  try {
+    const logs = await SystemLog.find({ ownerId: req.user.firebaseUid })
+      .sort({ createdAt: -1 })
+      .limit(20);
+
+    res.json(logs);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to load logs" });
+  }
+});
+
+/* ----------------------------------------
+   🔵 REQUIRED BY YOUR FRONTEND
+   GET ALL SOPs (RecentSOPs.jsx)
+---------------------------------------- */
+app.get("/api/sops", authenticate, async (req, res) => {
+  try {
+    const sops = await SOP.find({ ownerId: req.user.firebaseUid }).sort({
+      updated: -1,
+    });
+
+    res.json(sops);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to load SOPs" });
+  }
+});
+
+/* ----------------------------------------
    TRAINING ROUTES
 ---------------------------------------- */
 app.post("/api/training", authenticate, requireAdmin, async (req, res) => {
   try {
-    const { title, description, videoUrl, thumbnailUrl, assignedEmployees } = req.body;
+    const { title, description, videoUrl, thumbnailUrl, assignedEmployees } =
+      req.body;
 
     if (!title || !videoUrl)
       return res.status(400).json({ message: "Missing required fields" });
@@ -416,7 +449,7 @@ app.post("/api/employees", authenticate, requireAdmin, async (req, res) => {
 
   try {
     fbUser = await admin.auth().getUserByEmail(email);
-  } catch { }
+  } catch {}
 
   if (!fbUser) {
     fbUser = await admin.auth().createUser({
