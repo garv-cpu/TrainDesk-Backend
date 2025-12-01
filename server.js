@@ -419,6 +419,15 @@ app.post("/api/sops", authenticate, requireAdmin, async (req, res) => {
   res.json(sop);
 });
 
+app.put("/api/sops/:id/clear", authenticate, async (req, res) => {
+  const updated = await SOP.findByIdAndUpdate(
+    req.params.id,
+    { content: "" },
+    { new: true }
+  );
+  res.json(updated);
+});
+
 app.get("/api/sops", authenticate, requireAdmin, async (req, res) => {
   res.json(
     await SOP.find({ ownerId: req.user.firebaseUid }).sort({ updated: -1 })
