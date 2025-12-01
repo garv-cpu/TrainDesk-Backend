@@ -1250,12 +1250,8 @@ app.get("/api/stats", authenticate, async (req, res) => {
   try {
     const ownerId = req.user.firebaseUid;
 
-    // Count employees created by admin
-    const employees = await Employee.countDocuments({
-      ownerId,
-    });
+    const employees = await Employee.countDocuments({ ownerId });
 
-    // Trainings owned by admin
     const activeTrainings = await TrainingVideo.countDocuments({
       ownerId,
       status: "active",
@@ -1266,23 +1262,20 @@ app.get("/api/stats", authenticate, async (req, res) => {
       status: "completed",
     });
 
-    // Pending SOPs = employees with pendingSOPs > 0
-    const pendingSOPs = await Employee.countDocuments({
-      ownerId,
-      pendingSOPs: { $gt: 0 },
-    });
+    const totalSops = await SOP.countDocuments({ ownerId });
 
     res.json({
       employees,
       activeTrainings,
       completedTrainings,
-      pendingSOPs,
+      totalSops,
     });
   } catch (err) {
-    console.error("STATS ERROR:", err);
-    res.status(500).json({ message: "Failed to load stats" });
+    console.error("Stats error:", err);
+    res.status(500).json({ message: "Failed to fetch stats" });
   }
 });
+
 
 
 
