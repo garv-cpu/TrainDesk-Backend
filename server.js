@@ -755,32 +755,32 @@ app.get("/api/training", authenticate, requireAdmin, async (req, res) => {
   }
 });
 
-app.post("/api/training", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const {
-      title,
-      description,
-      videoUrl,
-      thumbnailUrl,
-      assignedEmployees = []
-    } = req.body;
+// app.post("/api/training", authenticate, requireAdmin, async (req, res) => {
+//   try {
+//     const {
+//       title,
+//       description,
+//       videoUrl,
+//       thumbnailUrl,
+//       assignedEmployees = []
+//     } = req.body;
 
-    const newVideo = await TrainingVideo.create({
-      ownerId: req.user.firebaseUid,
-      title,
-      description,
-      videoUrl,
-      thumbnailUrl,
-      assignedEmployees,
-      status: "active",
-      completedBy: []
-    });
+//     const newVideo = await TrainingVideo.create({
+//       ownerId: req.user.firebaseUid,
+//       title,
+//       description,
+//       videoUrl,
+//       thumbnailUrl,
+//       assignedEmployees,
+//       status: "active",
+//       completedBy: []
+//     });
 
-    res.json(newVideo);
-  } catch (err) {
-    res.status(500).json({ message: "Failed to create training video" });
-  }
-});
+//     res.json(newVideo);
+//   } catch (err) {
+//     res.status(500).json({ message: "Failed to create training video" });
+//   }
+// });
 
 app.get("/api/training/:id", authenticate, async (req, res) => {
   try {
@@ -798,21 +798,21 @@ app.get("/api/training/:id", authenticate, async (req, res) => {
   }
 });
 
-app.delete("/api/training/:id", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const deleted = await TrainingVideo.findOneAndDelete({
-      _id: req.params.id,
-      ownerId: req.user.firebaseUid,
-    });
+// app.delete("/api/training/:id", authenticate, requireAdmin, async (req, res) => {
+//   try {
+//     const deleted = await TrainingVideo.findOneAndDelete({
+//       _id: req.params.id,
+//       ownerId: req.user.firebaseUid,
+//     });
 
-    if (!deleted)
-      return res.status(404).json({ message: "Video not found" });
+//     if (!deleted)
+//       return res.status(404).json({ message: "Video not found" });
 
-    res.json({ message: "Training video deleted" });
-  } catch (err) {
-    res.status(500).json({ message: "Failed to delete video" });
-  }
-});
+//     res.json({ message: "Training video deleted" });
+//   } catch (err) {
+//     res.status(500).json({ message: "Failed to delete video" });
+//   }
+// });
 
 /* =====================================================
    GET ALL EMPLOYEES
