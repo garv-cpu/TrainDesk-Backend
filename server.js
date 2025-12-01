@@ -148,7 +148,8 @@ const Employee = mongoose.model("Employee", EmployeeSchema);
 const SOP = mongoose.model("SOP", SOPSchema);
 const TrainingVideo = mongoose.model("TrainingVideo", TrainingVideoSchema);
 
-cloudinary.config({
+
+cloudinary.v2.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
@@ -204,29 +205,27 @@ function requireAdmin(req, res, next) {
     : res.status(403).json({ message: "Admin only" });
 }
 
-app.get("/api/cloudinary-signature", authenticate, requireAdmin, (req, res) => {
+app.get("/api/cloudinary-signature", (req, res) => {
   try {
-    const { folder } = req.query;
     const timestamp = Math.round(Date.now() / 1000);
 
-    let paramsToSign = `timestamp=${timestamp}`;
-    if (folder) paramsToSign += `&folder=${folder}`;
+    const folder = req.query.folder || "training_videos";
 
-    const signature = crypto
-      .createHash("sha256")
-      .update(paramsToSign + process.env.CLOUDINARY_API_SECRET)
-      .digest("hex");
+    const signature = cloudinary.v2.utils.api_sign_request(
+      { timestamp, folder },
+      process.env.CLOUDINARY_API_SECRET
+    );
 
-    return res.json({
-      timestamp,
+    res.json({
       signature,
+      timestamp,
       folder,
-      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
       apiKey: process.env.CLOUDINARY_API_KEY,
+      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
     });
-  } catch (e) {
-    console.log("Signature error:", e);
-    return res.status(500).json({ message: "Signature failed" });
+  } catch (err) {
+    console.error("Cloudinary Signature Error", err);
+    res.status(500).json({ error: "Cannot generate signature" });
   }
 });
 
