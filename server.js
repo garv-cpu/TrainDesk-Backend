@@ -526,7 +526,7 @@ app.get("/api/sops", authenticate, async (req, res) => {
 ===================================================== */
 app.post("/api/sops", authenticate, async (req, res) => {
   const ownerId = req.user.firebaseUid;
-  const { title, dept, content } = req.body;
+  const { title, dept, content, assignedTo } = req.body;
 
   if (!title || !dept || !content) {
     return res.status(400).json({ message: "All fields are required" });
@@ -538,6 +538,7 @@ app.post("/api/sops", authenticate, async (req, res) => {
       title,
       dept,
       content,
+      assignedTo: assignedTo || [], // ✅ FIX
       createdAt: new Date(),
       updated: new Date(),
     });
@@ -549,37 +550,36 @@ app.post("/api/sops", authenticate, async (req, res) => {
   }
 });
 
+
 /* =====================================================
    UPDATE / EDIT SOP
    PUT /api/sops/:id
 ===================================================== */
 app.put("/api/sops/:id", authenticate, async (req, res) => {
-  const ownerId = req.user.firebaseUid;
   const { id } = req.params;
-  const { title, dept, content } = req.body;
+  const { title, dept, content, assignedTo } = req.body;
 
   try {
-    // Find SOP of this user only
-    const sop = await SOP.findOne({ _id: id, ownerId });
-
-    if (!sop) {
-      return res.status(404).json({ message: "SOP not found" });
-    }
+    const sop = await SOP.findById(id);
+    if (!sop) return res.status(404).json({ message: "SOP not found" });
 
     // Update fields
-    sop.title = title ?? sop.title;
-    sop.dept = dept ?? sop.dept;
-    sop.content = content ?? sop.content;
+    if (title) sop.title = title;
+    if (dept) sop.dept = dept;
+    if (content) sop.content = content;
+    if (assignedTo) sop.assignedTo = assignedTo; // ✅ FIX
+
     sop.updated = new Date();
 
     await sop.save();
 
-    res.json({ message: "SOP updated", sop });
+    return res.json({ message: "SOP updated successfully", sop });
   } catch (err) {
     console.error("UPDATE SOP ERROR:", err);
     return res.status(500).json({ message: "Server error updating SOP" });
   }
 });
+
 
 /* =====================================================
    GET A SINGLE SOP (View Page)
@@ -590,7 +590,8 @@ app.get("/api/sops/:id", authenticate, async (req, res) => {
   const { id } = req.params;
 
   try {
-    const sop = await SOP.findOne({ _id: id, ownerId });
+    const sop = await SOP.findOne({ _id: id, ownerId })
+      .populate("assignedTo", "name email");
 
     if (!sop) {
       return res.status(404).json({ message: "SOP not found" });
@@ -602,6 +603,7 @@ app.get("/api/sops/:id", authenticate, async (req, res) => {
     res.status(500).json({ message: "Server error loading SOP" });
   }
 });
+
 
 
 /* =====================================================
