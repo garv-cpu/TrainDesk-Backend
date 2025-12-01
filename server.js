@@ -915,28 +915,28 @@ app.get("/api/employee/training", authenticate, async (req, res) => {
     const emp = await Employee.findOne({ firebaseUid: req.user.firebaseUid });
     if (!emp) return res.status(404).json({ message: "Employee not found" });
 
-    // Fetch all trainings from the same company owner
+    // Get all training created by the same owner/company
     const allTraining = await TrainingVideo.find({ ownerId: emp.ownerId })
       .sort({ createdAt: -1 });
 
-    // Filter → Only assigned OR global trainings
+    // Visible rules:
+    // 1. Global training (assignedEmployees = empty)
+    // 2. Assigned directly to this employee
     const visibleTraining = allTraining.filter((t) => {
-      return (
-        t.assignedEmployees.length === 0 ||  // Global training (visible to all)
-        t.assignedEmployees.includes(emp.firebaseUid) // Specifically assigned
-      );
+      const assigned = t.assignedEmployees || [];
+      return assigned.length === 0 || assigned.includes(emp.firebaseUid);
     });
 
-    // Add completed flag
+    // Build final response object
     const response = visibleTraining.map((t) => ({
       _id: t._id,
       title: t.title,
       description: t.description,
       videoUrl: t.videoUrl,
       thumbnailUrl: t.thumbnailUrl,
-      assignedEmployees: t.assignedEmployees,
-      completed: t.completedBy.includes(emp.firebaseUid),
-      status: t.status,
+      assignedEmployees: t.assignedEmployees || [],
+      completed: (t.completedBy || []).includes(emp.firebaseUid),
+      status: t.status || "active",
       createdAt: t.createdAt,
     }));
 
@@ -946,6 +946,7 @@ app.get("/api/employee/training", authenticate, async (req, res) => {
     res.status(500).json({ message: "Failed to load employee training" });
   }
 });
+
 
 // app.post("/api/training", authenticate, requireAdmin, async (req, res) => {
 //   try {
