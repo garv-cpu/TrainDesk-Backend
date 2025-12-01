@@ -1126,7 +1126,7 @@ app.get("/api/sops/:id/progress", authenticate, async (req, res) => {
 });
 
 // GET /api/admin/sops/completed-count
-app.get("/api/admin/sops/completed-count", authenticateAdmin, async (req, res) => {
+app.get("/api/admin/sops/completed-count", authenticate, async (req, res) => {
   const total = await EmployeeSOPProgress.countDocuments({ completed: true });
   res.json({ total });
 });
