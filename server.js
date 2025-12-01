@@ -12,6 +12,9 @@ import { v2 as cloudinary } from "cloudinary";
 import crypto from "crypto";
 import http from "http";
 import { Server } from "socket.io";
+import PDFDocument from "pdfkit";
+import fs from "fs";
+import path from "path";
 
 dotenv.config();
 
@@ -55,6 +58,53 @@ if (!process.env.FIREBASE_PROJECT_ID) {
   console.error("Missing FIREBASE_PROJECT_ID");
   process.exit(1);
 }
+
+export const uploadFile = async (localPath) => {
+  try {
+    const result = await cloudinary.uploader.upload(localPath, {
+      folder: "hibonos/sop-certificates",
+      resource_type: "auto",
+    });
+
+    // remove from temp
+    fs.unlinkSync(localPath);
+
+    return result.secure_url;
+  } catch (err) {
+    console.error("Cloudinary Upload Error:", err);
+    throw new Error("Upload failed");
+  }
+};
+
+export const generateCertificate = async ({ employeeName, sopTitle }) => {
+  const doc = new PDFDocument({ size: "A4", layout: "landscape" });
+
+  const filePath = path.join("temp", `${Date.now()}-cert.pdf`);
+  const stream = fs.createWriteStream(filePath);
+  doc.pipe(stream);
+
+  doc.fontSize(28).text("Certificate of Completion", { align: "center" });
+  doc.moveDown();
+  doc.fontSize(18).text(`This certifies that`, { align: "center" });
+  doc.moveDown();
+  doc.fontSize(26).text(`${employeeName}`, { align: "center", bold: true });
+  doc.moveDown();
+  doc.fontSize(18).text(`has successfully completed the SOP:`, {
+    align: "center",
+  });
+  doc.moveDown();
+  doc.fontSize(24).text(`${sopTitle}`, { align: "center" });
+
+  doc.end();
+
+  await new Promise((resolve) => stream.on("finish", resolve));
+
+  const remoteUrl = await uploadFile(filePath);
+
+  fs.unlinkSync(filePath);
+
+  return remoteUrl;
+};
 
 /* ----------------------------------------
    INIT FIREBASE ADMIN
@@ -149,6 +199,12 @@ const EmployeeSchema = new mongoose.Schema({
   completedTrainings: [{ type: mongoose.Schema.Types.ObjectId, ref: "TrainingVideo" }],
   pendingSOPs: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now },
+  completedBy: [
+    {
+      empId: { type: mongoose.Schema.Types.ObjectId, ref: "Employee" },
+      completedAt: Date,
+    },
+  ],
 });
 
 const SOPSchema = new mongoose.Schema({
@@ -218,13 +274,21 @@ const SystemSettingsSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now },
 });
 
+const EmployeeSOPProgressSchema = new mongoose.Schema({
+  employeeId: { type: String, required: true }, // firebaseUid
+  sopId: { type: mongoose.Schema.Types.ObjectId, ref: "SOP", required: true },
+  completed: { type: Boolean, default: false },
+  completedAt: { type: Date, default: null },
+  certificateUrl: { type: String, default: null },
+});
+
 const SystemSettings = mongoose.model("SystemSettings", SystemSettingsSchema);
 const SystemLog = mongoose.model("SystemLog", SystemLogSchema);
 const User = mongoose.model("User", UserSchema);
 const Employee = mongoose.model("Employee", EmployeeSchema);
 const SOP = mongoose.model("SOP", SOPSchema);
 const TrainingVideo = mongoose.model("TrainingVideo", TrainingVideoSchema);
-
+const EmployeeSOPProgress = mongoose.model("EmployeeSOPProgress", EmployeeSOPProgressSchema)
 // ----------------------------
 // Helper: getOrCreateSettings
 // ----------------------------
@@ -935,26 +999,46 @@ app.delete("/api/sops/:id", authenticate, requireAdmin, async (req, res) => {
 /* ----------------------------------------
    STATS
 ---------------------------------------- */
+/* ----------------------------------------
+   ADMIN DASHBOARD STATS
+---------------------------------------- */
 app.get("/api/stats", authenticate, requireAdmin, async (req, res) => {
   try {
     const ownerId = req.user.firebaseUid;
 
+    // EMPLOYEES
     const employees = await Employee.countDocuments({ ownerId });
+
+    // TRAININGS
     const activeTrainings = await TrainingVideo.countDocuments({
       ownerId,
       status: "active",
     });
+
     const completedTrainings = await TrainingVideo.countDocuments({
       ownerId,
       status: "completed",
     });
-    const sops = await SOP.countDocuments({ ownerId });
+
+    // SOP TOTALS
+    const totalSops = await SOP.countDocuments({ ownerId });
+
+    // COMPLETED SOPs by employees
+    const completedSOPs = await EmployeeSOPProgress.countDocuments({
+      ownerId,
+      completed: true,
+    });
+
+    // Remaining SOPs
+    const pendingSOPs =
+      totalSops - completedSOPs < 0 ? 0 : totalSops - completedSOPs;
 
     res.json({
       employees,
       activeTrainings,
       completedTrainings,
-      pendingSOPs: sops,
+      completedSOPs,
+      pendingSOPs,
     });
   } catch (err) {
     console.error("Stats error:", err);
@@ -988,6 +1072,65 @@ app.get("/api/employees", authenticate, requireAdmin, async (req, res) => {
   }
 });
 
+// POST /api/sops/:id/complete
+app.post("/api/sops/:id/complete", authenticate, async (req, res) => {
+  const employeeId = req.user.firebaseUid;
+  const sopId = req.params.id;
+
+  try {
+    // ensure SOP exists
+    const sop = await SOP.findById(sopId);
+    if (!sop) return res.status(404).json({ message: "SOP not found" });
+
+    // check if already completed
+    let progress = await EmployeeSOPProgress.findOne({ employeeId, sopId });
+
+    if (progress && progress.completed) {
+      return res.json(progress);
+    }
+
+    // generate certificate
+    const certificateUrl = await generateCertificate({
+      employeeName: req.user.displayName,
+      sopTitle: sop.title,
+    });
+
+    // update or create progress record
+    progress = await EmployeeSOPProgress.findOneAndUpdate(
+      { employeeId, sopId },
+      {
+        completed: true,
+        completedAt: new Date(),
+        certificateUrl,
+      },
+      { new: true, upsert: true }
+    );
+
+    res.json(progress);
+  } catch (err) {
+    console.log("COMPLETE SOP ERROR:", err);
+    res.status(500).json({ message: "Server error marking complete" });
+  }
+});
+
+// GET /api/sops/:id/progress
+app.get("/api/sops/:id/progress", authenticate, async (req, res) => {
+  const employeeId = req.user.firebaseUid;
+
+  const progress = await EmployeeSOPProgress.findOne({
+    employeeId,
+    sopId: req.params.id,
+  });
+
+  res.json(progress || { completed: false });
+});
+
+// GET /api/admin/sops/completed-count
+app.get("/api/admin/sops/completed-count", authenticateAdmin, async (req, res) => {
+  const total = await EmployeeSOPProgress.countDocuments({ completed: true });
+  res.json({ total });
+});
+
 /* =====================================================
    EMPLOYEE — GET ASSIGNED SOPs
    /api/employee/sops
@@ -1013,6 +1156,46 @@ app.get("/api/employee/sops", authenticate, async (req, res) => {
   } catch (err) {
     console.error("EMPLOYEE SOP LOAD ERROR:", err);
     res.status(500).json({ message: "Failed to load employee SOPs" });
+  }
+});
+
+/* =====================================================
+   EMPLOYEE — MARK SOP COMPLETED
+   /api/employee/sops/:id/complete
+===================================================== */
+app.post("/api/employee/sops/:id/complete", authenticate, async (req, res) => {
+  try {
+    if (!req.user.isEmployee)
+      return res.status(403).json({ message: "Employees only" });
+
+    const sopId = req.params.id;
+
+    const emp = await Employee.findOne({ firebaseUid: req.user.firebaseUid });
+    if (!emp) return res.status(404).json({ message: "Employee not found" });
+
+    const sop = await SOP.findById(sopId);
+    if (!sop) return res.status(404).json({ message: "SOP not found" });
+
+    // Prevent multiple completion entries
+    const alreadyDone = sop.completedBy.some(
+      (x) => x.empId.toString() === emp._id.toString()
+    );
+
+    if (alreadyDone) {
+      return res.json({ message: "Already completed" });
+    }
+
+    sop.completedBy.push({
+      empId: emp._id,
+      completedAt: new Date(),
+    });
+
+    await sop.save();
+
+    res.json({ message: "SOP marked as completed" });
+  } catch (err) {
+    console.error("SOP COMPLETE ERROR:", err);
+    res.status(500).json({ message: "Server error completing SOP" });
   }
 });
 
@@ -1042,6 +1225,52 @@ app.delete("/api/employees/:id", authenticate, requireAdmin, async (req, res) =>
     console.error("Employee delete error:", err);
     res.status(500).json({ message: "Failed to delete employee" });
   }
+});
+
+app.get("/api/employee/sops/:id", authenticate, async (req, res) => {
+  try {
+    if (!req.user.isEmployee)
+      return res.status(403).json({ message: "Employees only" });
+
+    const sopId = req.params.id;
+
+    const emp = await Employee.findOne({ firebaseUid: req.user.firebaseUid });
+    if (!emp) return res.status(404).json({ message: "Employee not found" });
+
+    const sop = await SOP.findOne({
+      _id: sopId,
+      assignedTo: emp._id,
+    }).lean();
+
+    if (!sop) return res.status(404).json({ message: "SOP not found" });
+
+    sop.completed =
+      sop.completedBy?.some(
+        (x) => x.empId.toString() === emp._id.toString()
+      ) || false;
+
+    res.json(sop);
+  } catch (err) {
+    console.error("LOAD EMP SOP ERROR:", err);
+    res.status(500).json({ message: "Error loading SOP" });
+  }
+});
+
+// GET /api/employees/me/sop-progress
+app.get("/api/employees/me/sop-progress", authenticate, async (req, res) => {
+  const employeeId = req.user.firebaseUid;
+
+  const totalSops = await SOP.countDocuments();
+  const completed = await EmployeeSOPProgress.countDocuments({
+    employeeId,
+    completed: true,
+  });
+
+  res.json({
+    totalSops,
+    completed,
+    percentage: totalSops === 0 ? 0 : Math.round((completed / totalSops) * 100),
+  });
 });
 
 /* ----------------------------------------
