@@ -238,6 +238,24 @@ app.get("/api/cloudinary-signature", (req, res) => {
 
 
 // TRAINING
+app.get("/api/training/:id", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const video = await TrainingVideo.findOne({
+      _id: req.params.id,
+      ownerId: req.user.firebaseUid
+    });
+
+    if (!video)
+      return res.status(404).json({ message: "Training video not found" });
+
+    res.json(video);
+
+  } catch (err) {
+    console.error("Training fetch error:", err);
+    res.status(500).json({ message: "Failed to fetch training video" });
+  }
+});
+
 app.post("/api/training", authenticate, requireAdmin, async (req, res) => {
   try {
     const { title, description, videoUrl, thumbnailUrl, assignedEmployees } = req.body;
