@@ -166,7 +166,7 @@ if (process.env.SERVER_URL) {
     try {
       await fetch(process.env.SERVER_URL + "/ping");
       console.log("Ping sent.");
-    } catch {}
+    } catch { }
   });
 }
 
@@ -206,18 +206,20 @@ function requireAdmin(req, res, next) {
 
 app.get("/api/cloudinary-signature", authenticate, requireAdmin, (req, res) => {
   try {
+    const { folder } = req.query; // <----- accept folder parameter
     const timestamp = Math.round(new Date().getTime() / 1000);
 
     const signature = crypto
       .createHash("sha256")
       .update(
-        `timestamp=${timestamp}&folder=training_videos${process.env.CLOUDINARY_API_SECRET}`
+        `timestamp=${timestamp}&folder=${folder}${process.env.CLOUDINARY_API_SECRET}`
       )
       .digest("hex");
 
     res.json({
       timestamp,
       signature,
+      folder,
       cloudName: process.env.CLOUDINARY_CLOUD_NAME,
       apiKey: process.env.CLOUDINARY_API_KEY,
     });
@@ -226,6 +228,7 @@ app.get("/api/cloudinary-signature", authenticate, requireAdmin, (req, res) => {
     res.status(500).json({ message: "Signature failed" });
   }
 });
+
 
 // TRAINING
 app.post("/api/training", authenticate, requireAdmin, async (req, res) => {
@@ -372,7 +375,7 @@ app.post("/api/employees", authenticate, requireAdmin, async (req, res) => {
 
   try {
     fbUser = await admin.auth().getUserByEmail(email);
-  } catch {}
+  } catch { }
 
   if (!fbUser) {
     fbUser = await admin.auth().createUser({
