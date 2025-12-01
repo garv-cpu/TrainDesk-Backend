@@ -1218,95 +1218,72 @@ app.delete("/api/sops/:id", authenticate, requireAdmin, async (req, res) => {
    ADMIN DASHBOARD STATS
 ---------------------------------------- */
 
-app.get("/api/stats", authenticate, requireAdmin, async (req, res) => {
+app.get("/api/admin/training-breakdown", authenticate, requireAdmin, async (req, res) => {
   try {
     const ownerId = req.user.firebaseUid;
 
-    // EMPLOYEES
-    const employees = await Employee.countDocuments({ ownerId });
+    const records = await EmployeeTrainingProgress.find({ ownerId, completed: true })
+      .populate("employeeId", "name email")
+      .populate("videoId", "title");
 
-    // ACTIVE TRAININGS (videos created by admin)
+    const result = records.map(r => ({
+      employeeName: r.employeeId?.name || "Unknown",
+      employeeEmail: r.employeeId?.email || "Unknown",
+      trainingTitle: r.videoId?.title || "Deleted Training",
+      trainingId: r.videoId?._id,
+      completedAt: r.completedAt,
+    }));
+
+    res.json(result);
+
+  } catch (err) {
+    console.error("Breakdown error:", err);
+    res.status(500).json({ message: "Failed to fetch breakdown" });
+  }
+});
+
+/* =====================================================
+   DASHBOARD STATS
+   GET /api/stats
+===================================================== */
+app.get("/api/stats", authenticate, async (req, res) => {
+  try {
+    const ownerId = req.user.firebaseUid;
+
+    // Count employees created by admin
+    const employees = await Employee.countDocuments({
+      ownerId,
+    });
+
+    // Trainings owned by admin
     const activeTrainings = await TrainingVideo.countDocuments({
       ownerId,
       status: "active",
     });
 
-    // ⭐ FIX: COMPLETED TRAININGS (by employees)
-    const completedTrainings = await EmployeeTrainingProgress.countDocuments({
+    const completedTrainings = await TrainingVideo.countDocuments({
       ownerId,
-      completed: true,
+      status: "completed",
     });
 
-    // SOP TOTALS
-    const totalSops = await SOP.countDocuments({ ownerId });
-
-    // COMPLETED SOPs by employees
-    const completedSOPs = await EmployeeSOPProgress.countDocuments({
+    // Pending SOPs = employees with pendingSOPs > 0
+    const pendingSOPs = await Employee.countDocuments({
       ownerId,
-      completed: true,
+      pendingSOPs: { $gt: 0 },
     });
-
-    // Remaining SOPs
-    const pendingSOPs =
-      totalSops - completedSOPs < 0 ? 0 : totalSops - completedSOPs;
 
     res.json({
       employees,
       activeTrainings,
-      completedTrainings, // ⭐ FIXED
-      completedSOPs,
+      completedTrainings,
       pendingSOPs,
     });
   } catch (err) {
-    console.error("Stats error:", err);
-    res.status(500).json({ message: "Failed to fetch stats" });
+    console.error("STATS ERROR:", err);
+    res.status(500).json({ message: "Failed to load stats" });
   }
 });
 
-app.get("/api/stats", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const ownerId = req.user.firebaseUid;
-
-    // EMPLOYEES
-    const employees = await Employee.countDocuments({ ownerId });
-
-    // ACTIVE TRAININGS (videos created by admin)
-    const activeTrainings = await TrainingVideo.countDocuments({
-      ownerId,
-      status: "active",
-    });
-
-    // ⭐ FIX: COMPLETED TRAININGS (by employees)
-    const completedTrainings = await EmployeeTrainingProgress.countDocuments({
-      ownerId,
-      completed: true,
-    });
-
-    // SOP TOTALS
-    const totalSops = await SOP.countDocuments({ ownerId });
-
-    // COMPLETED SOPs by employees
-    const completedSOPs = await EmployeeSOPProgress.countDocuments({
-      ownerId,
-      completed: true,
-    });
-
-    // Remaining SOPs
-    const pendingSOPs =
-      totalSops - completedSOPs < 0 ? 0 : totalSops - completedSOPs;
-
-    res.json({
-      employees,
-      activeTrainings,
-      completedTrainings, // ⭐ FIXED
-      completedSOPs,
-      pendingSOPs,
-    });
-  } catch (err) {
-    console.error("Stats error:", err);
-    res.status(500).json({ message: "Failed to fetch stats" });
-  }
-});
 
 
 app.get("/api/users/me", authenticate, async (req, res) => {
