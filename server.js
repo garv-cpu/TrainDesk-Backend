@@ -498,6 +498,33 @@ app.delete("/api/training/:id", authenticate, requireAdmin, async (req, res) => 
   }
 });
 
+// UNIVERSAL SEARCH
+app.get("/api/search", authenticate, async (req, res) => {
+  const q = (req.query.q || "").toLowerCase();
+  const ownerId = req.user.firebaseUid;
+
+  if (!q) return res.json({ sop: [], training: [] });
+
+  try {
+    const sops = await SOP.find({
+      ownerId,
+      title: { $regex: q, $options: "i" }
+    }).select("title _id");
+
+    const trainings = await TrainingVideo.find({
+      ownerId,
+      title: { $regex: q, $options: "i" }
+    }).select("title _id thumbnailUrl");
+
+    res.json({
+      sop: sops,
+      training: trainings
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Search failed" });
+  }
+});
+
 /* ----------------------------------------
    EMPLOYEE CREATION
 ---------------------------------------- */
