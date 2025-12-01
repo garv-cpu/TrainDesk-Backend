@@ -318,6 +318,35 @@ app.get("/api/sops", authenticate, async (req, res) => {
 });
 
 /* =====================================================
+   CREATE SOP
+   POST /api/sops
+===================================================== */
+app.post("/api/sops", authenticate, async (req, res) => {
+  const ownerId = req.user.firebaseUid;
+  const { title, dept, content } = req.body;
+
+  if (!title || !dept || !content) {
+    return res.status(400).json({ message: "All fields are required" });
+  }
+
+  try {
+    const sop = await SOP.create({
+      ownerId,
+      title,
+      dept,
+      content,
+      createdAt: new Date(),
+      updated: new Date(),
+    });
+
+    return res.json({ message: "SOP created successfully", sop });
+  } catch (err) {
+    console.error("CREATE SOP ERROR:", err);
+    return res.status(500).json({ message: "Server error creating SOP" });
+  }
+});
+
+/* =====================================================
    UPDATE / EDIT SOP
    PUT /api/sops/:id
 ===================================================== */
