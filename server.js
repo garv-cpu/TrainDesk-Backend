@@ -7,6 +7,7 @@ import fetch from "node-fetch";
 import jwt from "jsonwebtoken";
 import jwksClient from "jwks-rsa";
 import admin from "firebase-admin";
+import { v2 as cloudinary } from "cloudinary";
 
 dotenv.config();
 
@@ -131,9 +132,26 @@ const SOPSchema = new mongoose.Schema({
   updated: { type: Date, default: Date.now },
 });
 
+const TrainingVideoSchema = new mongoose.Schema({
+  ownerId: String,          // Admin UID
+  title: String,
+  description: String,
+  videoUrl: String,
+  thumbnailUrl: String,
+  assignedEmployees: [String], // employee firebaseUids
+  createdAt: { type: Date, default: Date.now },
+});
+
 const User = mongoose.model("User", UserSchema);
 const Employee = mongoose.model("Employee", EmployeeSchema);
 const SOP = mongoose.model("SOP", SOPSchema);
+const TrainingVideo = mongoose.model("TrainingVideo", TrainingVideoSchema);
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
 /* ----------------------------------------
    KEEP SERVER ALIVE
@@ -184,6 +202,100 @@ function requireAdmin(req, res, next) {
     ? next()
     : res.status(403).json({ message: "Admin only" });
 }
+
+// TRAINING
+app.post("/api/training", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { title, description, assignedEmployees, videoBase64, thumbnailBase64 } = req.body;
+
+    if (!videoBase64 || !title) {
+      return res.status(400).json({ message: "Missing fields" });
+    }
+
+    // Upload VIDEO
+    const videoUpload = await cloudinary.uploader.upload(videoBase64, {
+      resource_type: "video",
+      folder: "training_videos",
+    });
+
+    // Upload THUMBNAIL (optional)
+    let thumbnailUrl = "";
+    if (thumbnailBase64) {
+      const imgUpload = await cloudinary.uploader.upload(thumbnailBase64, {
+        resource_type: "image",
+        folder: "training_thumbnails",
+      });
+      thumbnailUrl = imgUpload.secure_url;
+    }
+
+    // Save DB
+    const training = await new TrainingVideo({
+      ownerId: req.user.firebaseUid,
+      title,
+      description,
+      videoUrl: videoUpload.secure_url,
+      thumbnailUrl,
+      assignedEmployees: assignedEmployees || [],
+    }).save();
+
+    res.json(training);
+  } catch (err) {
+    console.log("Upload error:", err);
+    res.status(500).json({ message: "Upload failed" });
+  }
+});
+
+app.get("/api/training", authenticate, requireAdmin, async (req, res) => {
+  const list = await TrainingVideo.find({
+    ownerId: req.user.firebaseUid,
+  }).sort({ createdAt: -1 });
+
+  res.json(list);
+});
+
+app.delete("/api/training/:id", authenticate, requireAdmin, async (req, res) => {
+  const deleted = await TrainingVideo.findOneAndDelete({
+    _id: req.params.id,
+    ownerId: req.user.firebaseUid,
+  });
+
+  if (!deleted) return res.status(404).json({ message: "Training video not found" });
+
+  res.json({ message: "Deleted" });
+});
+
+app.get("/api/employee/training", authenticate, async (req, res) => {
+  const emp = await Employee.findOne({ firebaseUid: req.user.firebaseUid });
+  if (!emp) return res.status(404).json({ message: "Employee not found" });
+
+  const videos = await TrainingVideo.find({
+    ownerId: emp.ownerId,
+    $or: [
+      { assignedEmployees: [] },                         // Public to all
+      { assignedEmployees: emp.firebaseUid },            // Assigned specifically
+    ],
+  }).sort({ createdAt: -1 });
+
+  res.json(videos);
+});
+
+app.get("/api/employee/training/:id", authenticate, async (req, res) => {
+  const emp = await Employee.findOne({ firebaseUid: req.user.firebaseUid });
+  if (!emp) return res.status(404).json({ message: "Employee not found" });
+
+  const video = await TrainingVideo.findOne({
+    _id: req.params.id,
+    ownerId: emp.ownerId,
+    $or: [
+      { assignedEmployees: [] },
+      { assignedEmployees: emp.firebaseUid },
+    ],
+  });
+
+  if (!video) return res.status(404).json({ message: "Video not found" });
+
+  res.json(video);
+});
 
 /* ----------------------------------------
    EMPLOYEE: /api/employees/me
