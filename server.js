@@ -157,6 +157,9 @@ const SOPSchema = new mongoose.Schema({
   dept: String,
   content: String,
   updated: { type: Date, default: Date.now },
+  assignedTo: [
+    { type: mongoose.Schema.Types.ObjectId, ref: "Employee" }
+  ]
 });
 
 const TrainingVideoSchema = new mongoose.Schema({
@@ -371,7 +374,7 @@ try {
         // (You can extend this to enable/disable server-side broadcast loops etc.)
         if (change.updateDescription?.updatedFields?.["websocket.enabled"] !== undefined) {
           console.log(`SystemSettings websocket.enabled changed for owner ${full.ownerId}:`, full.websocket.enabled);
-          addLog(full.ownerId, `WebSocket ${full.websocket.enabled ? "enabled" : "disabled"}`, "settings").catch(()=>{});
+          addLog(full.ownerId, `WebSocket ${full.websocket.enabled ? "enabled" : "disabled"}`, "settings").catch(() => { });
         }
       } catch (e) {
         console.error("SystemSettings change handler error:", e);
@@ -501,15 +504,18 @@ app.get("/api/logs", authenticate, async (req, res) => {
 /* ----------------------------------------
    🔵 REQUIRED BY YOUR FRONTEND
    GET ALL SOPs (RecentSOPs.jsx)
+/* ----------------------------------------
+   GET ALL SOPs
 ---------------------------------------- */
 app.get("/api/sops", authenticate, async (req, res) => {
   try {
-    const sops = await SOP.find({ ownerId: req.user.firebaseUid }).sort({
-      updated: -1,
-    });
+    const sops = await SOP.find({ ownerId: req.user.firebaseUid })
+      .populate("assignedTo", "name email dept role")  // ✅ populate employees
+      .sort({ updated: -1 });
 
     res.json(sops);
   } catch (err) {
+    console.error("SOP load error:", err);
     res.status(500).json({ message: "Failed to load SOPs" });
   }
 });
@@ -872,7 +878,7 @@ app.post("/api/employees", authenticate, requireAdmin, async (req, res) => {
 
   try {
     fbUser = await admin.auth().getUserByEmail(email);
-  } catch {}
+  } catch { }
 
   if (!fbUser) {
     fbUser = await admin.auth().createUser({
