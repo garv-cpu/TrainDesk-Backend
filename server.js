@@ -12,6 +12,12 @@ import crypto from "crypto";;
 
 dotenv.config();
 
+console.log("Loaded Cloudinary ENV:", {
+  name: process.env.CLOUDINARY_CLOUD_NAME,
+  key: process.env.CLOUDINARY_API_KEY,
+  secret: process.env.CLOUDINARY_API_SECRET ? "YES" : "NO"
+});
+
 /*
   REQUIRED ENV:
   - MONGO_URI
