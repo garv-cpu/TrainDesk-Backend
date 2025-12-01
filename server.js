@@ -546,6 +546,46 @@ app.get("/api/employees/me", authenticate, async (req, res) => {
 });
 
 /* ----------------------------------------
+   GET ALL EMPLOYEES (OWNER ONLY)
+---------------------------------------- */
+app.get("/api/employees", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const employees = await Employee.find({ ownerId: req.user.firebaseUid });
+    res.json(employees);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch employees" });
+  }
+});
+
+/* ----------------------------------------
+   DELETE EMPLOYEE
+---------------------------------------- */
+app.delete("/api/employees/:id", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const deleted = await Employee.findOneAndDelete({
+      _id: req.params.id,
+      ownerId: req.user.firebaseUid,
+    });
+
+    if (!deleted)
+      return res.status(404).json({ message: "Employee not found" });
+
+    await addLog(
+      req.user.firebaseUid,
+      `Employee deleted: ${deleted.name}`,
+      "employee"
+    );
+
+    emitToOwner(req.user.firebaseUid, "employee:deleted", deleted);
+
+    res.json({ message: "Employee deleted" });
+  } catch (err) {
+    console.error("Employee delete error:", err);
+    res.status(500).json({ message: "Failed to delete employee" });
+  }
+});
+
+/* ----------------------------------------
    START SERVER
 ---------------------------------------- */
 const PORT = process.env.PORT || 5000;
