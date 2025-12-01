@@ -10,9 +10,34 @@ import jwksClient from "jwks-rsa";
 import admin from "firebase-admin";
 import { v2 as cloudinary } from "cloudinary";
 import crypto from "crypto";
+import http from "http";
+import { Server } from "socket.io";
 
 dotenv.config();
 
+/* -------------------------------
+   EXPRESS + SOCKET INIT
+-------------------------------- */
+const app = express();
+const server = http.createServer(app);
+
+const io = new Server(server, {
+  cors: { origin: "*" },
+});
+
+/* Socket Connected */
+io.on("connection", (socket) => {
+  console.log("🔵 WebSocket connected:", socket.id);
+});
+
+/* Emit helper */
+function emitToOwner(ownerId, event, data) {
+  io.emit(`${ownerId}:${event}`, data);
+}
+
+/* ----------------------------------------
+   Check Cloudinary ENV
+---------------------------------------- */
 console.log("Loaded Cloudinary ENV:", {
   name: process.env.CLOUDINARY_CLOUD_NAME,
   key: process.env.CLOUDINARY_API_KEY,
@@ -35,7 +60,6 @@ if (!process.env.FIREBASE_PROJECT_ID) {
    INIT FIREBASE ADMIN
 ---------------------------------------- */
 let firebaseAdminInitialized = false;
-
 try {
   const cert = JSON.parse(process.env.FIREBASE_ADMIN_CERT);
 
@@ -88,11 +112,10 @@ function verifyFirebaseToken(token) {
 }
 
 /* ----------------------------------------
-   EXPRESS INIT
+   EXPRESS
 ---------------------------------------- */
-const app = express();
 app.use(cors());
-app.use(express.json({ limit: "8mb" })); // increased limit for safety (videos are uploaded to cloudinary not server)
+app.use(express.json({ limit: "8mb" }));
 
 /* ----------------------------------------
    MONGO CONNECT
@@ -106,7 +129,7 @@ mongoose
   });
 
 /* ----------------------------------------
-   MODELS (updated TrainingVideo schema)
+   MODELS
 ---------------------------------------- */
 const UserSchema = new mongoose.Schema({
   firebaseUid: String,
@@ -123,7 +146,6 @@ const EmployeeSchema = new mongoose.Schema({
   dept: String,
   role: { type: String, enum: ["owner", "manager", "staff"], default: "staff" },
   status: { type: String, enum: ["active", "inactive"], default: "active" },
-  // optional: track completed trainings per employee
   completedTrainings: [{ type: mongoose.Schema.Types.ObjectId, ref: "TrainingVideo" }],
   pendingSOPs: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now },
@@ -137,23 +159,26 @@ const SOPSchema = new mongoose.Schema({
   updated: { type: Date, default: Date.now },
 });
 
-/*
-  TrainingVideo schema: 
-  - status: 'active' | 'completed'
-  - completedBy: array of employee firebaseUids (who completed)
-*/
 const TrainingVideoSchema = new mongoose.Schema({
-  ownerId: String, // Admin UID
+  ownerId: String,
   title: String,
   description: String,
   videoUrl: String,
   thumbnailUrl: String,
-  assignedEmployees: [String], // employee firebaseUids (empty => public to all)
+  assignedEmployees: [String],
   status: { type: String, enum: ["active", "completed"], default: "active" },
-  completedBy: [String], // employee firebaseUids who marked complete
+  completedBy: [String],
   createdAt: { type: Date, default: Date.now },
 });
 
+const SystemLogSchema = new mongoose.Schema({
+  ownerId: String,
+  message: String,
+  type: { type: String },
+  createdAt: { type: Date, default: Date.now },
+});
+
+const SystemLog = mongoose.model("SystemLog", SystemLogSchema);
 const User = mongoose.model("User", UserSchema);
 const Employee = mongoose.model("Employee", EmployeeSchema);
 const SOP = mongoose.model("SOP", SOPSchema);
@@ -187,7 +212,8 @@ if (process.env.SERVER_URL) {
 ---------------------------------------- */
 async function authenticate(req, res, next) {
   const authHeader = req.headers.authorization || "";
-  if (!authHeader.startsWith("Bearer ")) return res.status(401).json({ message: "Missing token" });
+  if (!authHeader.startsWith("Bearer "))
+    return res.status(401).json({ message: "Missing token" });
 
   const token = authHeader.split(" ")[1];
 
@@ -210,19 +236,31 @@ async function authenticate(req, res, next) {
 }
 
 function requireAdmin(req, res, next) {
-  return req.user.role === "admin" ? next() : res.status(403).json({ message: "Admin only" });
+  return req.user.role === "admin"
+    ? next()
+    : res.status(403).json({ message: "Admin only" });
 }
 
 /* ----------------------------------------
-   CLOUDINARY SIGNATURE (unchanged)
+   LOG + WEBSOCKET BROADCAST
+---------------------------------------- */
+async function addLog(ownerId, message, type = "system") {
+  const log = await SystemLog.create({ ownerId, message, type });
+  emitToOwner(ownerId, "log:new", log);
+}
+
+/* ----------------------------------------
+   CLOUDINARY SIGNATURE
 ---------------------------------------- */
 app.get("/api/cloudinary-signature", (req, res) => {
   try {
     const timestamp = Math.round(Date.now() / 1000);
     const folder = req.query.folder || "training_videos";
 
-    // use cloudinary utils to sign
-    const signature = cloudinary.utils.api_sign_request({ timestamp, folder }, process.env.CLOUDINARY_API_SECRET);
+    const signature = cloudinary.utils.api_sign_request(
+      { timestamp, folder },
+      process.env.CLOUDINARY_API_SECRET
+    );
 
     res.json({
       signature,
@@ -238,39 +276,18 @@ app.get("/api/cloudinary-signature", (req, res) => {
 });
 
 /* ----------------------------------------
-   TRAINING ROUTES (updated)
+   TRAINING ROUTES
 ---------------------------------------- */
-
-// Get single training (admin)
-app.get("/api/training/:id", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const video = await TrainingVideo.findOne({
-      _id: req.params.id,
-      ownerId: req.user.firebaseUid,
-    });
-
-    if (!video) return res.status(404).json({ message: "Training video not found" });
-
-    res.json(video);
-  } catch (err) {
-    console.error("Training fetch error:", err);
-    res.status(500).json({ message: "Failed to fetch training video" });
-  }
-});
-
-// Create training (admin)
 app.post("/api/training", authenticate, requireAdmin, async (req, res) => {
   try {
-    const { title, description, videoUrl, thumbnailUrl, assignedEmployees, status } = req.body;
+    const { title, description, videoUrl, thumbnailUrl, assignedEmployees } = req.body;
 
-    if (!title || !videoUrl) {
+    if (!title || !videoUrl)
       return res.status(400).json({ message: "Missing required fields" });
-    }
 
     let finalThumbnail = thumbnailUrl;
-    if (!thumbnailUrl) {
-      finalThumbnail = videoUrl.replace("/upload/", "/upload/so_1/"); // frame at 1 second
-    }
+    if (!finalThumbnail)
+      finalThumbnail = videoUrl.replace("/upload/", "/upload/so_1/");
 
     const training = await new TrainingVideo({
       ownerId: req.user.firebaseUid,
@@ -279,8 +296,11 @@ app.post("/api/training", authenticate, requireAdmin, async (req, res) => {
       videoUrl,
       thumbnailUrl: finalThumbnail,
       assignedEmployees: assignedEmployees || [],
-      status: status === "completed" ? "completed" : "active",
     }).save();
+
+    await addLog(req.user.firebaseUid, `Created training "${title}"`, "training");
+
+    emitToOwner(req.user.firebaseUid, "training:created", training);
 
     res.json(training);
   } catch (err) {
@@ -289,61 +309,29 @@ app.post("/api/training", authenticate, requireAdmin, async (req, res) => {
   }
 });
 
-// List trainings (admin)
-app.get("/api/training", authenticate, requireAdmin, async (req, res) => {
-  const list = await TrainingVideo.find({
-    ownerId: req.user.firebaseUid,
-  }).sort({ createdAt: -1 });
-
-  res.json(list);
-});
-
-// Delete training (admin)
 app.delete("/api/training/:id", authenticate, requireAdmin, async (req, res) => {
   const deleted = await TrainingVideo.findOneAndDelete({
     _id: req.params.id,
     ownerId: req.user.firebaseUid,
   });
 
-  if (!deleted) return res.status(404).json({ message: "Training video not found" });
+  if (!deleted)
+    return res.status(404).json({ message: "Training video not found" });
+
+  await addLog(
+    req.user.firebaseUid,
+    `Deleted training "${deleted.title}"`,
+    "training"
+  );
+
+  emitToOwner(req.user.firebaseUid, "training:deleted", deleted);
 
   res.json({ message: "Deleted" });
 });
 
 /* ----------------------------------------
-   EMPLOYEE training endpoints (view & complete)
+   EMPLOYEE TRAINING COMPLETE
 ---------------------------------------- */
-
-// Employee: list available trainings (public or assigned)
-app.get("/api/employee/training", authenticate, async (req, res) => {
-  const emp = await Employee.findOne({ firebaseUid: req.user.firebaseUid });
-  if (!emp) return res.status(404).json({ message: "Employee not found" });
-
-  const videos = await TrainingVideo.find({
-    ownerId: emp.ownerId,
-    $or: [{ assignedEmployees: [] }, { assignedEmployees: emp.firebaseUid }],
-  }).sort({ createdAt: -1 });
-
-  res.json(videos);
-});
-
-// Employee: get single training (if allowed)
-app.get("/api/employee/training/:id", authenticate, async (req, res) => {
-  const emp = await Employee.findOne({ firebaseUid: req.user.firebaseUid });
-  if (!emp) return res.status(404).json({ message: "Employee not found" });
-
-  const video = await TrainingVideo.findOne({
-    _id: req.params.id,
-    ownerId: emp.ownerId,
-    $or: [{ assignedEmployees: [] }, { assignedEmployees: emp.firebaseUid }],
-  });
-
-  if (!video) return res.status(404).json({ message: "Video not found" });
-
-  res.json(video);
-});
-
-// Employee: mark training complete for themselves
 app.post("/api/training/:id/complete", authenticate, async (req, res) => {
   try {
     const emp = await Employee.findOne({ firebaseUid: req.user.firebaseUid });
@@ -352,38 +340,43 @@ app.post("/api/training/:id/complete", authenticate, async (req, res) => {
     const training = await TrainingVideo.findById(req.params.id);
     if (!training) return res.status(404).json({ message: "Training not found" });
 
-    // check access: training should belong to employee's owner
-    if (training.ownerId !== emp.ownerId) return res.status(403).json({ message: "Not allowed" });
+    if (training.ownerId !== emp.ownerId)
+      return res.status(403).json({ message: "Not allowed" });
 
-    // check assignedEmployees (if assigned and employee not in list -> forbidden)
-    if (training.assignedEmployees && training.assignedEmployees.length > 0) {
-      if (!training.assignedEmployees.includes(emp.firebaseUid)) {
-        return res.status(403).json({ message: "Training not assigned to you" });
-      }
+    if (
+      training.assignedEmployees.length > 0 &&
+      !training.assignedEmployees.includes(emp.firebaseUid)
+    ) {
+      return res.status(403).json({ message: "Not assigned to you" });
     }
 
-    // add employee to completedBy if not present
     if (!training.completedBy.includes(emp.firebaseUid)) {
       training.completedBy.push(emp.firebaseUid);
     }
 
-    // decide whether to mark training status 'completed':
-    // - if no assignedEmployees (public), mark completed when any one completes (you can change this)
-    // - if assignedEmployees exist, mark completed only when all assigned employees have completed
-    if (!training.assignedEmployees || training.assignedEmployees.length === 0) {
+    if (training.assignedEmployees.length === 0) {
       training.status = "completed";
     } else {
-      const allCompleted = training.assignedEmployees.every((a) => training.completedBy.includes(a));
+      const allCompleted = training.assignedEmployees.every((uid) =>
+        training.completedBy.includes(uid)
+      );
       if (allCompleted) training.status = "completed";
     }
 
     await training.save();
 
-    // optionally add to employee.completedTrainings
     if (!emp.completedTrainings.includes(training._id)) {
       emp.completedTrainings.push(training._id);
       await emp.save();
     }
+
+    await addLog(
+      emp.ownerId,
+      `${emp.name} completed training "${training.title}"`,
+      "training"
+    );
+
+    emitToOwner(emp.ownerId, "training:completed", { training, employee: emp });
 
     res.json({ message: "Marked complete", training });
   } catch (err) {
@@ -392,60 +385,21 @@ app.post("/api/training/:id/complete", authenticate, async (req, res) => {
   }
 });
 
-// Admin: force mark training completed
-app.post("/api/training/:id/mark-complete", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const training = await TrainingVideo.findOne({ _id: req.params.id, ownerId: req.user.firebaseUid });
-    if (!training) return res.status(404).json({ message: "Training not found" });
-
-    training.status = "completed";
-    await training.save();
-
-    res.json({ message: "Training force-marked completed", training });
-  } catch (err) {
-    console.error("Admin mark complete error:", err);
-    res.status(500).json({ message: "Failed to mark complete" });
-  }
-});
-
 /* ----------------------------------------
-   EMPLOYEE: /api/employees/me
----------------------------------------- */
-app.get("/api/employees/me", authenticate, async (req, res) => {
-  const emp = await Employee.findOne({ firebaseUid: req.user.firebaseUid });
-
-  if (!emp) return res.status(404).json({ message: "Employee not found" });
-  if (emp.status !== "active") return res.status(403).json({ message: "Account inactive" });
-
-  if (emp.role === "admin") return res.status(403).json({ message: "Admins can't login here" });
-
-  res.json(emp);
-});
-
-/* ----------------------------------------
-   ADMIN REGISTER & users/me (unchanged)
----------------------------------------- */
-app.post("/api/users/register-admin", authenticate, async (req, res) => {
-  const updated = await User.findOneAndUpdate({ firebaseUid: req.user.firebaseUid }, { role: "admin" }, { new: true });
-  res.json({ message: "Registered admin", updated });
-});
-
-app.get("/api/users/me", authenticate, (req, res) => {
-  res.json(req.user);
-});
-
-/* ----------------------------------------
-   EMPLOYEES CRUD (unchanged)
+   EMPLOYEE CREATION
 ---------------------------------------- */
 app.post("/api/employees", authenticate, requireAdmin, async (req, res) => {
   const { name, email, dept } = req.body;
 
-  if (!name || !email || !dept) return res.status(400).json({ message: "Missing fields" });
+  if (!name || !email || !dept)
+    return res.status(400).json({ message: "Missing fields" });
 
   let firebaseUid = null;
 
   if (!firebaseAdminInitialized) {
-    return res.status(400).json({ message: "Firebase admin not initialized on server" });
+    return res
+      .status(400)
+      .json({ message: "Firebase admin not initialized on server" });
   }
 
   let fbUser = null;
@@ -471,24 +425,11 @@ app.post("/api/employees", authenticate, requireAdmin, async (req, res) => {
     dept,
   }).save();
 
+  await addLog(req.user.firebaseUid, `Employee added: ${name}`, "employee");
+
+  emitToOwner(req.user.firebaseUid, "employee:created", emp);
+
   res.json({ message: "Employee created", emp });
-});
-
-app.get("/api/employees", authenticate, requireAdmin, async (req, res) => {
-  const list = await Employee.find({ ownerId: req.user.firebaseUid }).sort({ createdAt: -1 });
-  res.json(list);
-});
-
-app.put("/api/employees/:id", authenticate, requireAdmin, async (req, res) => {
-  const updated = await Employee.findOneAndUpdate({ _id: req.params.id, ownerId: req.user.firebaseUid }, req.body, { new: true });
-  if (!updated) return res.status(404).json({ message: "Employee not found" });
-  res.json(updated);
-});
-
-app.delete("/api/employees/:id", authenticate, requireAdmin, async (req, res) => {
-  const deleted = await Employee.findOneAndDelete({ _id: req.params.id, ownerId: req.user.firebaseUid });
-  if (!deleted) return res.status(404).json({ message: "Employee not found" });
-  res.json({ message: "Deleted" });
 });
 
 /* ----------------------------------------
@@ -496,61 +437,43 @@ app.delete("/api/employees/:id", authenticate, requireAdmin, async (req, res) =>
 ---------------------------------------- */
 app.post("/api/sops", authenticate, requireAdmin, async (req, res) => {
   const sop = await new SOP({ ownerId: req.user.firebaseUid, ...req.body }).save();
-  res.json(sop);
-});
 
-app.put("/api/sops/:id/clear", authenticate, async (req, res) => {
-  const updated = await SOP.findByIdAndUpdate(req.params.id, { content: "" }, { new: true });
-  res.json(updated);
-});
+  await addLog(req.user.firebaseUid, `Created SOP: ${sop.title}`, "sop");
+  emitToOwner(req.user.firebaseUid, "sop:created", sop);
 
-app.get("/api/sops", authenticate, requireAdmin, async (req, res) => {
-  res.json(await SOP.find({ ownerId: req.user.firebaseUid }).sort({ updated: -1 }));
-});
-
-app.get("/api/sops/:id", authenticate, requireAdmin, async (req, res) => {
-  const sop = await SOP.findOne({ _id: req.params.id, ownerId: req.user.firebaseUid });
-  if (!sop) return res.status(404).json({ message: "SOP not found" });
   res.json(sop);
 });
 
 app.delete("/api/sops/:id", authenticate, requireAdmin, async (req, res) => {
-  const deleted = await SOP.findOneAndDelete({ _id: req.params.id, ownerId: req.user.firebaseUid });
+  const deleted = await SOP.findOneAndDelete({
+    _id: req.params.id,
+    ownerId: req.user.firebaseUid,
+  });
+
   if (!deleted) return res.status(404).json({ message: "SOP not found" });
+
+  await addLog(req.user.firebaseUid, `Deleted SOP: ${deleted.title}`, "sop");
+  emitToOwner(req.user.firebaseUid, "sop:deleted", deleted);
+
   res.json({ message: "Deleted" });
 });
 
 /* ----------------------------------------
-   EMPLOYEE: GET SOP LIST
----------------------------------------- */
-app.get("/api/employee/sops", authenticate, async (req, res) => {
-  const emp = await Employee.findOne({ firebaseUid: req.user.firebaseUid });
-  if (!emp) return res.status(404).json({ message: "Employee not found" });
-
-  const sops = await SOP.find({ ownerId: emp.ownerId }).sort({ updated: -1 });
-  res.json(sops);
-});
-
-app.get("/api/employee/sops/:id", authenticate, async (req, res) => {
-  const emp = await Employee.findOne({ firebaseUid: req.user.firebaseUid });
-  if (!emp) return res.status(404).json({ message: "Employee not found" });
-
-  const sop = await SOP.findOne({ _id: req.params.id, ownerId: emp.ownerId });
-  if (!sop) return res.status(404).json({ message: "SOP not found" });
-
-  res.json(sop);
-});
-
-/* ----------------------------------------
-   STATS (updated with real training counts)
+   STATS
 ---------------------------------------- */
 app.get("/api/stats", authenticate, requireAdmin, async (req, res) => {
   try {
     const ownerId = req.user.firebaseUid;
 
     const employees = await Employee.countDocuments({ ownerId });
-    const activeTrainings = await TrainingVideo.countDocuments({ ownerId, status: "active" });
-    const completedTrainings = await TrainingVideo.countDocuments({ ownerId, status: "completed" });
+    const activeTrainings = await TrainingVideo.countDocuments({
+      ownerId,
+      status: "active",
+    });
+    const completedTrainings = await TrainingVideo.countDocuments({
+      ownerId,
+      status: "completed",
+    });
     const sops = await SOP.countDocuments({ ownerId });
 
     res.json({
@@ -569,4 +492,6 @@ app.get("/api/stats", authenticate, requireAdmin, async (req, res) => {
    START SERVER
 ---------------------------------------- */
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log("Server running on " + PORT));
+server.listen(PORT, () =>
+  console.log("🚀 Server + WebSocket running on " + PORT)
+);
