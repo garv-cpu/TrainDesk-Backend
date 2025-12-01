@@ -164,8 +164,23 @@ function verifyFirebaseToken(token) {
 /* ----------------------------------------
    EXPRESS
 ---------------------------------------- */
-app.use(cors());
+app.use(cors({
+  origin: ["http://localhost:5173", "https://train-desk.vercel.app"],
+  methods: "GET,POST,PUT,DELETE,OPTIONS",
+  allowedHeaders: "Content-Type,Authorization",
+  credentials: true
+}));
+
+app.options("*", cors());
+
 app.use(express.json({ limit: "8mb" }));
+
+app.use((req, res, next) => {
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
 /* ----------------------------------------
    MONGO CONNECT
