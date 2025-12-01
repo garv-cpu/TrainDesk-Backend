@@ -7,7 +7,8 @@ import fetch from "node-fetch";
 import jwt from "jsonwebtoken";
 import jwksClient from "jwks-rsa";
 import admin from "firebase-admin";
-import { v2 as cloudinary } from "cloudinary";
+import { v2 as cloudinary } from "cloudinary"
+import crypto from "crypto";;
 
 dotenv.config();
 
@@ -203,47 +204,64 @@ function requireAdmin(req, res, next) {
     : res.status(403).json({ message: "Admin only" });
 }
 
+app.get("/api/cloudinary-signature", authenticate, requireAdmin, (req, res) => {
+  try {
+    const timestamp = Math.round(new Date().getTime() / 1000);
+
+    const signature = crypto
+      .createHash("sha256")
+      .update(
+        `timestamp=${timestamp}&folder=training_videos${process.env.CLOUDINARY_API_SECRET}`
+      )
+      .digest("hex");
+
+    res.json({
+      timestamp,
+      signature,
+      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+      apiKey: process.env.CLOUDINARY_API_KEY,
+    });
+  } catch (e) {
+    console.log("Signature error:", e);
+    res.status(500).json({ message: "Signature failed" });
+  }
+});
+
 // TRAINING
 app.post("/api/training", authenticate, requireAdmin, async (req, res) => {
   try {
-    const { title, description, assignedEmployees, videoBase64, thumbnailBase64 } = req.body;
+    const { title, description, videoUrl, thumbnailUrl, assignedEmployees } = req.body;
 
-    if (!videoBase64 || !title) {
-      return res.status(400).json({ message: "Missing fields" });
+    if (!title || !videoUrl) {
+      return res.status(400).json({ message: "Missing required fields" });
     }
 
-    // Upload VIDEO
-    const videoUpload = await cloudinary.uploader.upload(videoBase64, {
-      resource_type: "video",
-      folder: "training_videos",
-    });
+    let finalThumbnail = thumbnailUrl;
 
-    // Upload THUMBNAIL (optional)
-    let thumbnailUrl = "";
-    if (thumbnailBase64) {
-      const imgUpload = await cloudinary.uploader.upload(thumbnailBase64, {
-        resource_type: "image",
-        folder: "training_thumbnails",
-      });
-      thumbnailUrl = imgUpload.secure_url;
+    // 🔵 If user did NOT upload custom thumbnail → auto-generate from video
+    if (!thumbnailUrl) {
+      finalThumbnail = videoUrl.replace(
+        "/upload/",
+        "/upload/so_1/"
+      ); // Frame at 1 second
     }
 
-    // Save DB
     const training = await new TrainingVideo({
       ownerId: req.user.firebaseUid,
       title,
       description,
-      videoUrl: videoUpload.secure_url,
-      thumbnailUrl,
+      videoUrl,
+      thumbnailUrl: finalThumbnail,
       assignedEmployees: assignedEmployees || [],
     }).save();
 
     res.json(training);
   } catch (err) {
-    console.log("Upload error:", err);
-    res.status(500).json({ message: "Upload failed" });
+    console.log("Training create error:", err);
+    res.status(500).json({ message: "Failed to create training" });
   }
 });
+
 
 app.get("/api/training", authenticate, requireAdmin, async (req, res) => {
   const list = await TrainingVideo.find({
