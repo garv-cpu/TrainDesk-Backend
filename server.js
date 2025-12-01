@@ -428,6 +428,76 @@ app.post("/api/training/:id/complete", authenticate, async (req, res) => {
   }
 });
 
+app.get("/api/training", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const videos = await TrainingVideo.find({ ownerId: req.user.firebaseUid })
+      .sort({ createdAt: -1 });
+
+    res.json(videos);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch training videos" });
+  }
+});
+
+app.post("/api/training", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const {
+      title,
+      description,
+      videoUrl,
+      thumbnailUrl,
+      assignedEmployees = []
+    } = req.body;
+
+    const newVideo = await TrainingVideo.create({
+      ownerId: req.user.firebaseUid,
+      title,
+      description,
+      videoUrl,
+      thumbnailUrl,
+      assignedEmployees,
+      status: "active",
+      completedBy: []
+    });
+
+    res.json(newVideo);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to create training video" });
+  }
+});
+
+app.get("/api/training/:id", authenticate, async (req, res) => {
+  try {
+    const video = await TrainingVideo.findOne({
+      _id: req.params.id,
+      ownerId: req.user.firebaseUid,
+    });
+
+    if (!video)
+      return res.status(404).json({ message: "Video not found" });
+
+    res.json(video);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch video" });
+  }
+});
+
+app.delete("/api/training/:id", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const deleted = await TrainingVideo.findOneAndDelete({
+      _id: req.params.id,
+      ownerId: req.user.firebaseUid,
+    });
+
+    if (!deleted)
+      return res.status(404).json({ message: "Video not found" });
+
+    res.json({ message: "Training video deleted" });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to delete video" });
+  }
+});
+
 /* ----------------------------------------
    EMPLOYEE CREATION
 ---------------------------------------- */
