@@ -242,8 +242,16 @@ const TrainingVideoSchema = new mongoose.Schema({
   assignedEmployees: [String],
   status: { type: String, enum: ["active", "completed"], default: "active" },
   completedBy: [String],
+  quiz: [
+    {
+      question: String,
+      options: [String],
+      correct: String
+    }
+  ],
   createdAt: { type: Date, default: Date.now },
 });
+
 
 const SystemLogSchema = new mongoose.Schema({
   ownerId: String,
