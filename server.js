@@ -206,17 +206,18 @@ function requireAdmin(req, res, next) {
 
 app.get("/api/cloudinary-signature", authenticate, requireAdmin, (req, res) => {
   try {
-    const { folder } = req.query; // <----- accept folder parameter
-    const timestamp = Math.round(new Date().getTime() / 1000);
+    const { folder } = req.query;
+    const timestamp = Math.round(Date.now() / 1000);
+
+    let paramsToSign = `timestamp=${timestamp}`;
+    if (folder) paramsToSign += `&folder=${folder}`;
 
     const signature = crypto
       .createHash("sha256")
-      .update(
-        `timestamp=${timestamp}&folder=${folder}${process.env.CLOUDINARY_API_SECRET}`
-      )
+      .update(paramsToSign + process.env.CLOUDINARY_API_SECRET)
       .digest("hex");
 
-    res.json({
+    return res.json({
       timestamp,
       signature,
       folder,
@@ -225,9 +226,10 @@ app.get("/api/cloudinary-signature", authenticate, requireAdmin, (req, res) => {
     });
   } catch (e) {
     console.log("Signature error:", e);
-    res.status(500).json({ message: "Signature failed" });
+    return res.status(500).json({ message: "Signature failed" });
   }
 });
+
 
 
 // TRAINING
