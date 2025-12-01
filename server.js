@@ -317,6 +317,88 @@ app.get("/api/sops", authenticate, async (req, res) => {
   }
 });
 
+/* =====================================================
+   UPDATE / EDIT SOP
+   PUT /api/sops/:id
+===================================================== */
+app.put("/api/sops/:id", authenticate, async (req, res) => {
+  const ownerId = req.user.firebaseUid;
+  const { id } = req.params;
+  const { title, dept, content } = req.body;
+
+  try {
+    // Find SOP of this user only
+    const sop = await SOP.findOne({ _id: id, ownerId });
+
+    if (!sop) {
+      return res.status(404).json({ message: "SOP not found" });
+    }
+
+    // Update fields
+    sop.title = title ?? sop.title;
+    sop.dept = dept ?? sop.dept;
+    sop.content = content ?? sop.content;
+    sop.updated = new Date();
+
+    await sop.save();
+
+    res.json({ message: "SOP updated", sop });
+  } catch (err) {
+    console.error("UPDATE SOP ERROR:", err);
+    return res.status(500).json({ message: "Server error updating SOP" });
+  }
+});
+
+/* =====================================================
+   GET A SINGLE SOP (View Page)
+   /api/sops/:id
+===================================================== */
+app.get("/api/sops/:id", authenticate, async (req, res) => {
+  const ownerId = req.user.firebaseUid;
+  const { id } = req.params;
+
+  try {
+    const sop = await SOP.findOne({ _id: id, ownerId });
+
+    if (!sop) {
+      return res.status(404).json({ message: "SOP not found" });
+    }
+
+    res.json(sop);
+  } catch (err) {
+    console.error("GET SOP ERROR:", err);
+    res.status(500).json({ message: "Server error loading SOP" });
+  }
+});
+
+
+/* =====================================================
+   CLEAR SOP CONTENT
+   /api/sops/:id/clear
+===================================================== */
+app.put("/api/sops/:id/clear", authenticate, async (req, res) => {
+  const ownerId = req.user.firebaseUid;
+  const { id } = req.params;
+
+  try {
+    const sop = await SOP.findOne({ _id: id, ownerId });
+
+    if (!sop) {
+      return res.status(404).json({ message: "SOP not found" });
+    }
+
+    sop.content = "";
+    sop.updated = new Date();
+
+    await sop.save();
+
+    res.json(sop);
+  } catch (err) {
+    console.error("CLEAR SOP ERROR:", err);
+    res.status(500).json({ message: "Failed to clear SOP" });
+  }
+});
+
 /* ----------------------------------------
    TRAINING ROUTES
 ---------------------------------------- */
