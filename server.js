@@ -917,21 +917,30 @@ app.get("/api/employee/training", authenticate, async (req, res) => {
 //   }
 // });
 
+// backend: GET /api/training/:id
 app.get("/api/training/:id", authenticate, async (req, res) => {
   try {
     const video = await TrainingVideo.findOne({
       _id: req.params.id,
-      ownerId: req.user.firebaseUid,
+      ownerId: req.user.firebaseUid
     });
 
-    if (!video)
+    if (!video) {
       return res.status(404).json({ message: "Video not found" });
+    }
 
-    res.json(video);
+    res.json({
+      id: video._id,
+      title: video.title,
+      description: video.description,
+      videoUrl: video.videoUrl,
+      quiz: video.quiz || []
+    });
   } catch (err) {
-    res.status(500).json({ message: "Failed to fetch video" });
+    res.status(500).json({ message: "Failed to load video" });
   }
 });
+
 
 // app.delete("/api/training/:id", authenticate, requireAdmin, async (req, res) => {
 //   try {
