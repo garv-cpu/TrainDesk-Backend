@@ -203,7 +203,7 @@ if (process.env.SERVER_URL) {
     try {
       await fetch(process.env.SERVER_URL + "/ping");
       console.log("Ping sent.");
-    } catch {}
+    } catch { }
   });
 }
 
@@ -220,7 +220,17 @@ async function authenticate(req, res, next) {
   try {
     const decoded = await verifyFirebaseToken(token);
 
+    // FIRST try to match employee
+    let emp = await Employee.findOne({ firebaseUid: decoded.user_id });
+
+    if (emp) {
+      req.user = { ...emp.toObject(), isEmployee: true };
+      return next();
+    }
+
+    // otherwise match admin user
     let user = await User.findOne({ firebaseUid: decoded.user_id });
+
     if (!user) {
       user = await new User({
         firebaseUid: decoded.user_id,
@@ -228,7 +238,7 @@ async function authenticate(req, res, next) {
       }).save();
     }
 
-    req.user = user;
+    req.user = { ...user.toObject(), isEmployee: false };
     next();
   } catch (err) {
     return res.status(401).json({ message: "Invalid token" });
@@ -406,7 +416,7 @@ app.post("/api/employees", authenticate, requireAdmin, async (req, res) => {
 
   try {
     fbUser = await admin.auth().getUserByEmail(email);
-  } catch {}
+  } catch { }
 
   if (!fbUser) {
     fbUser = await admin.auth().createUser({
@@ -486,6 +496,20 @@ app.get("/api/stats", authenticate, requireAdmin, async (req, res) => {
     console.error("Stats error:", err);
     res.status(500).json({ message: "Failed to fetch stats" });
   }
+});
+
+app.get("/api/users/me", authenticate, async (req, res) => {
+  const user = await User.findOne({ firebaseUid: req.user.firebaseUid });
+  if (!user) return res.status(404).json({ message: "User not found" });
+
+  return res.json(user);
+});
+
+app.get("/api/employees/me", authenticate, async (req, res) => {
+  const emp = await Employee.findOne({ firebaseUid: req.user.firebaseUid });
+  if (!emp) return res.status(404).json({ message: "Employee not found" });
+
+  return res.json(emp);
 });
 
 /* ----------------------------------------
