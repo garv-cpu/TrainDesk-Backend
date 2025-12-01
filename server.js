@@ -171,12 +171,12 @@ app.use(cors({
   credentials: true
 }));
 
-// Handle OPTIONS for all routes (CORS preflight)
-app.options("/*", (req, res) => {
+// Handle OPTIONS for all routes (CORS preflight) — Express 5 compatible
+app.options(/.*/, (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
-  return res.sendStatus(200);
+  res.sendStatus(200);
 });
 
 
