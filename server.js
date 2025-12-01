@@ -1301,6 +1301,90 @@ app.delete("/api/employees/:id", authenticate, requireAdmin, async (req, res) =>
   }
 });
 
+/* =====================================================
+   EMPLOYEE – MARK SOP COMPLETED
+   POST /api/sops/:id/complete
+===================================================== */
+app.post("/api/sops/:id/complete", authenticate, async (req, res) => {
+  try {
+    const employeeUid = req.user.firebaseUid;
+    const sopId = req.params.id;
+
+    const emp = await Employee.findOne({ firebaseUid: employeeUid });
+    if (!emp) return res.status(404).json({ message: "Employee not found" });
+
+    const sop = await SOP.findById(sopId);
+    if (!sop) return res.status(404).json({ message: "SOP not found" });
+
+    if (sop.ownerId !== emp.ownerId)
+      return res.status(403).json({ message: "Not allowed" });
+
+    // --------- Check if already completed ----------
+    let progress = await EmployeeSOPProgress.findOne({
+      employeeId: employeeUid,
+      sopId
+    });
+
+    if (progress && progress.completed)
+      return res.json({ message: "Already completed", progress });
+
+    // If no progress exists, create it
+    if (!progress) {
+      progress = await EmployeeSOPProgress.create({
+        employeeId: employeeUid,
+        sopId
+      });
+    }
+
+    // --------- Mark Completed ----------
+    progress.completed = true;
+    progress.completedAt = new Date();
+
+    // Generate certificate PDF and upload it
+    const certificateUrl = await generateCertificate({
+      employeeName: emp.name,
+      sopTitle: sop.title,
+    });
+
+    progress.certificateUrl = certificateUrl;
+    await progress.save();
+
+    // --------- Update Employee Stats ----------
+    emp.completedBy.push({
+      empId: emp._id,
+      completedAt: new Date()
+    });
+
+    if (emp.pendingSOPs > 0) emp.pendingSOPs -= 1;
+
+    await emp.save();
+
+    // --------- LOG + SOCKET ----------
+    await addLog(
+      emp.ownerId,
+      `${emp.name} completed SOP "${sop.title}"`,
+      "sop"
+    );
+
+    emitToOwner(emp.ownerId, "sop:completed", {
+      employee: emp.name,
+      sopId,
+      sopTitle: sop.title,
+      certificateUrl
+    });
+
+    res.json({
+      message: "SOP marked as completed",
+      progress,
+      certificateUrl
+    });
+
+  } catch (err) {
+    console.error("SOP COMPLETE ERROR:", err);
+    res.status(500).json({ message: "Failed to mark SOP as completed" });
+  }
+});
+
 app.get("/api/employee/sops/:id", authenticate, async (req, res) => {
   try {
     if (!req.user.isEmployee)
