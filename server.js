@@ -924,30 +924,46 @@ app.get("/api/employee/training", authenticate, async (req, res) => {
 //     res.status(500).json({ message: "Failed to create training video" });
 //   }
 // });
-
-// backend: GET /api/training/:id
 app.get("/api/training/:id", authenticate, async (req, res) => {
   try {
-    const video = await TrainingVideo.findOne({
-      _id: req.params.id,
-      ownerId: req.user.firebaseUid
-    });
+    const video = await TrainingVideo.findById(req.params.id);
 
     if (!video) {
       return res.status(404).json({ message: "Video not found" });
     }
 
-    res.json({
-      id: video._id,
-      title: video.title,
-      description: video.description,
-      videoUrl: video.videoUrl,
-      quiz: video.quiz || []
-    });
+    // Employees should be allowed to view any video that exists
+    res.json(video);
+
   } catch (err) {
+    console.error(err);
     res.status(500).json({ message: "Failed to load video" });
   }
 });
+
+// backend: GET /api/training/:id
+// app.get("/api/training/:id", authenticate, async (req, res) => {
+//   try {
+//     const video = await TrainingVideo.findOne({
+//       _id: req.params.id,
+//       ownerId: req.user.firebaseUid
+//     });
+
+//     if (!video) {
+//       return res.status(404).json({ message: "Video not found" });
+//     }
+
+//     res.json({
+//       id: video._id,
+//       title: video.title,
+//       description: video.description,
+//       videoUrl: video.videoUrl,
+//       quiz: video.quiz || []
+//     });
+//   } catch (err) {
+//     res.status(500).json({ message: "Failed to load video" });
+//   }
+// });
 
 
 // app.delete("/api/training/:id", authenticate, requireAdmin, async (req, res) => {
