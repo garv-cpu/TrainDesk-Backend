@@ -252,6 +252,12 @@ const TrainingVideoSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
+const EmployeeProgressSchema = new mongoose.Schema({
+  employeeId: String,
+  videoId: String,
+  completed: Boolean,
+  updatedAt: { type: Date, default: Date.now },
+});
 
 const SystemLogSchema = new mongoose.Schema({
   ownerId: String,
@@ -305,6 +311,13 @@ const EmployeeSOPProgressSchema = new mongoose.Schema({
   certificateUrl: { type: String, default: null },
 });
 
+const EmployeeScoreSchema = new mongoose.Schema({
+  employeeId: String,
+  videoId: String,
+  score: Number,
+  updatedAt: { type: Date, default: Date.now },
+});
+
 const SystemSettings = mongoose.model("SystemSettings", SystemSettingsSchema);
 const SystemLog = mongoose.model("SystemLog", SystemLogSchema);
 const User = mongoose.model("User", UserSchema);
@@ -312,6 +325,8 @@ const Employee = mongoose.model("Employee", EmployeeSchema);
 const SOP = mongoose.model("SOP", SOPSchema);
 const TrainingVideo = mongoose.model("TrainingVideo", TrainingVideoSchema);
 const EmployeeSOPProgress = mongoose.model("EmployeeSOPProgress", EmployeeSOPProgressSchema)
+const EmployeeProgress = mongoose.model("EmployeeProgress", EmployeeProgressSchema);
+const EmployeeScore = mongoose.model("EmployeeScore", EmployeeScoreSchema);
 
 async function getEmployeeSopStats(employeeUid) {
   const total = await EmployeeSOPProgress.countDocuments({ employeeId: employeeUid });
@@ -938,6 +953,52 @@ app.get("/api/training/:id", authenticate, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Failed to load video" });
+  }
+});
+
+// GET employee progress for a video
+app.get("/api/employee/progress/:videoId", authenticate, async (req, res) => {
+  try {
+    const progress = await EmployeeProgress.findOne({
+      employeeId: req.user.firebaseUid,
+      videoId: req.params.videoId,
+    });
+
+    res.json(progress || { completed: false });
+  } catch (err) {
+    res.status(500).json({ message: "Cannot load progress" });
+  }
+});
+// SAVE employee progress
+app.post("/api/employee/progress", authenticate, async (req, res) => {
+  try {
+    const { videoId, completed } = req.body;
+
+    const progress = await EmployeeProgress.findOneAndUpdate(
+      { employeeId: req.user.firebaseUid, videoId },
+      { completed },
+      { upsert: true, new: true }
+    );
+
+    res.json(progress);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to save progress" });
+  }
+});
+// SAVE quiz score
+app.post("/api/employee/score", authenticate, async (req, res) => {
+  try {
+    const { videoId, score } = req.body;
+
+    const savedScore = await EmployeeScore.findOneAndUpdate(
+      { employeeId: req.user.firebaseUid, videoId },
+      { score },
+      { upsert: true, new: true }
+    );
+
+    res.json(savedScore);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to save score" });
   }
 });
 
