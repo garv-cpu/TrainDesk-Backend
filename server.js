@@ -524,6 +524,40 @@ if (process.env.SERVER_URL) {
   });
 }
 
+/* =====================================================
+   GET TRAINING VIDEO + QUIZ FOR EMPLOYEE
+   /api/employee/training/:id
+===================================================== */
+app.get("/api/employee/training/:id", authenticate, async (req, res) => {
+  try {
+    const videoId = req.params.id;
+
+    // employee is logged in
+    const employeeUid = req.user.firebaseUid;
+
+    const video = await TrainingVideo.findOne({
+      _id: videoId,
+      assignedEmployees: { $in: [employeeUid] },
+    });
+
+    if (!video)
+      return res.status(404).json({ message: "Training not found or not assigned" });
+
+    res.json({
+      id: video._id,
+      title: video.title,
+      description: video.description,
+      videoUrl: video.videoUrl,
+      thumbnailUrl: video.thumbnailUrl,
+      quiz: video.quiz || [],   // <— IMPORTANT
+    });
+
+  } catch (err) {
+    console.error("Employee Training Fetch ERROR:", err);
+    res.status(500).json({ message: "Server error fetching training" });
+  }
+});
+
 /* ----------------------------------------
    AUTH MIDDLEWARE
 ---------------------------------------- */
