@@ -289,6 +289,21 @@ const Employee = mongoose.model("Employee", EmployeeSchema);
 const SOP = mongoose.model("SOP", SOPSchema);
 const TrainingVideo = mongoose.model("TrainingVideo", TrainingVideoSchema);
 const EmployeeSOPProgress = mongoose.model("EmployeeSOPProgress", EmployeeSOPProgressSchema)
+
+async function getEmployeeSopStats(employeeUid) {
+  const total = await EmployeeSOPProgress.countDocuments({ employeeId: employeeUid });
+  const completed = await EmployeeSOPProgress.countDocuments({
+    employeeId: employeeUid,
+    completed: true,
+  });
+
+  return {
+    totalSops: total,
+    completed,
+    percentage: total > 0 ? Math.round((completed / total) * 100) : 0,
+  };
+}
+
 // ----------------------------
 // Helper: getOrCreateSettings
 // ----------------------------
@@ -1129,6 +1144,65 @@ app.get("/api/sops/:id/progress", authenticate, async (req, res) => {
 app.get("/api/admin/sops/completed-count", authenticate, async (req, res) => {
   const total = await EmployeeSOPProgress.countDocuments({ completed: true });
   res.json({ total });
+});
+
+/* =====================================================
+   EMPLOYEE — MARK SOP COMPLETE
+   POST /api/employee/sops/:id/complete
+===================================================== */
+app.post("/api/employee/sops/:id/complete", authenticate, async (req, res) => {
+  try {
+    if (!req.user.isEmployee)
+      return res.status(403).json({ message: "Employees only" });
+
+    const empUid = req.user.firebaseUid;
+    const { id } = req.params;
+
+    // Check SOP exists & employee allowed
+    const sop = await SOP.findById(id);
+    if (!sop) return res.status(404).json({ message: "SOP not found" });
+
+    // Find or create progress document
+    let progress = await EmployeeSOPProgress.findOne({
+      employeeId: empUid,
+      sopId: id,
+    });
+
+    if (!progress) {
+      progress = await EmployeeSOPProgress.create({
+        employeeId: empUid,
+        sopId: id,
+        completed: false,
+      });
+    }
+
+    // If already completed → no need to duplicate
+    if (progress.completed) {
+      return res.json({
+        progress,
+        stats: await getEmployeeSopStats(empUid),
+      });
+    }
+
+    // Generate certificate PDF
+    const certificateUrl = await generateCertificate({
+      employeeName: req.user.name,
+      sopTitle: sop.title,
+    });
+
+    progress.completed = true;
+    progress.completedAt = new Date();
+    progress.certificateUrl = certificateUrl;
+    await progress.save();
+
+    // Return updated stats for progress bar
+    const stats = await getEmployeeSopStats(empUid);
+
+    return res.json({ message: "SOP completed", progress, stats });
+  } catch (err) {
+    console.error("SOP COMPLETE ERROR:", err);
+    return res.status(500).json({ message: "Failed to mark complete" });
+  }
 });
 
 /* =====================================================
