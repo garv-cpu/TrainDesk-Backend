@@ -806,6 +806,24 @@ app.delete("/api/training/:id", authenticate, requireAdmin, async (req, res) => 
   }
 });
 
+/* =====================================================
+   GET ALL EMPLOYEES
+   GET /api/employees
+===================================================== */
+app.get("/api/employees", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const ownerId = req.user.firebaseUid;
+
+    // return employees created by this owner/admin
+    const employees = await Employee.find({ ownerId });
+
+    res.json({ employees });
+  } catch (err) {
+    console.error("GET EMPLOYEES ERROR:", err);
+    res.status(500).json({ message: "Failed to load employees" });
+  }
+});
+
 // UNIVERSAL SEARCH
 app.get("/api/search", authenticate, async (req, res) => {
   const q = (req.query.q || "").toLowerCase();
