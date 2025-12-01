@@ -849,6 +849,47 @@ app.get("/api/training", authenticate, requireAdmin, async (req, res) => {
   }
 });
 
+/* ----------------------------------------
+   EMPLOYEE: GET TRAINING LIST
+   GET /api/employee/training
+---------------------------------------- */
+app.get("/api/employee/training", authenticate, async (req, res) => {
+  try {
+    const emp = await Employee.findOne({ firebaseUid: req.user.firebaseUid });
+    if (!emp) return res.status(404).json({ message: "Employee not found" });
+
+    // Fetch all trainings from the same company owner
+    const allTraining = await TrainingVideo.find({ ownerId: emp.ownerId })
+      .sort({ createdAt: -1 });
+
+    // Filter → Only assigned OR global trainings
+    const visibleTraining = allTraining.filter((t) => {
+      return (
+        t.assignedEmployees.length === 0 ||  // Global training (visible to all)
+        t.assignedEmployees.includes(emp.firebaseUid) // Specifically assigned
+      );
+    });
+
+    // Add completed flag
+    const response = visibleTraining.map((t) => ({
+      _id: t._id,
+      title: t.title,
+      description: t.description,
+      videoUrl: t.videoUrl,
+      thumbnailUrl: t.thumbnailUrl,
+      assignedEmployees: t.assignedEmployees,
+      completed: t.completedBy.includes(emp.firebaseUid),
+      status: t.status,
+      createdAt: t.createdAt,
+    }));
+
+    res.json(response);
+  } catch (err) {
+    console.log("Employee training list error:", err);
+    res.status(500).json({ message: "Failed to load employee training" });
+  }
+});
+
 // app.post("/api/training", authenticate, requireAdmin, async (req, res) => {
 //   try {
 //     const {
@@ -1102,46 +1143,7 @@ app.get("/api/employees", authenticate, requireAdmin, async (req, res) => {
   }
 });
 
-// POST /api/sops/:id/complete
-app.post("/api/sops/:id/complete", authenticate, async (req, res) => {
-  const employeeId = req.user.firebaseUid;
-  const sopId = req.params.id;
 
-  try {
-    // ensure SOP exists
-    const sop = await SOP.findById(sopId);
-    if (!sop) return res.status(404).json({ message: "SOP not found" });
-
-    // check if already completed
-    let progress = await EmployeeSOPProgress.findOne({ employeeId, sopId });
-
-    if (progress && progress.completed) {
-      return res.json(progress);
-    }
-
-    // generate certificate
-    const certificateUrl = await generateCertificate({
-      employeeName: req.user.displayName,
-      sopTitle: sop.title,
-    });
-
-    // update or create progress record
-    progress = await EmployeeSOPProgress.findOneAndUpdate(
-      { employeeId, sopId },
-      {
-        completed: true,
-        completedAt: new Date(),
-        certificateUrl,
-      },
-      { new: true, upsert: true }
-    );
-
-    res.json(progress);
-  } catch (err) {
-    console.log("COMPLETE SOP ERROR:", err);
-    res.status(500).json({ message: "Server error marking complete" });
-  }
-});
 
 // GET /api/sops/:id/progress
 app.get("/api/sops/:id/progress", authenticate, async (req, res) => {
