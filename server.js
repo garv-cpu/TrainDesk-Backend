@@ -178,12 +178,209 @@ const SystemLogSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
+const SystemSettingsSchema = new mongoose.Schema({
+  ownerId: { type: String, required: true, unique: true },
+
+  websocket: {
+    enabled: { type: Boolean, default: true },
+    autoReconnect: { type: Boolean, default: true },
+    broadcastMode: { type: String, enum: ["all", "employees", "admins"], default: "all" },
+    heartbeatIntervalSec: { type: Number, default: 30 }, // seconds
+    testChannelPrefix: { type: String, default: "test" }, // prefix for test events
+  },
+
+  notifications: {
+    trainingUpdates: { type: Boolean, default: true },
+    employeeJoined: { type: Boolean, default: true },
+    sopUpdates: { type: Boolean, default: true },
+    digestMode: { type: String, enum: ["instant", "hourly", "daily"], default: "instant" },
+    emailFrom: { type: String, default: "" },
+  },
+
+  workflows: {
+    autoAssignOnJoin: { type: Boolean, default: true },
+    autoAssignOnDeptChange: { type: Boolean, default: false },
+    sopReviewCycleDays: { type: Number, default: 30 },
+    inactivityDaysToFlag: { type: Number, default: 90 },
+    requireApprovalForTraining: { type: Boolean, default: false },
+  },
+
+  employees: {
+    selfOnboarding: { type: Boolean, default: false },
+    defaultRole: { type: String, enum: ["staff", "manager"], default: "staff" },
+    allowDocumentUpload: { type: Boolean, default: true },
+    maxPendingSOPs: { type: Number, default: 5 },
+  },
+
+  updatedAt: { type: Date, default: Date.now },
+});
+
+const SystemSettings = mongoose.model("SystemSettings", SystemSettingsSchema);
 const SystemLog = mongoose.model("SystemLog", SystemLogSchema);
 const User = mongoose.model("User", UserSchema);
 const Employee = mongoose.model("Employee", EmployeeSchema);
 const SOP = mongoose.model("SOP", SOPSchema);
 const TrainingVideo = mongoose.model("TrainingVideo", TrainingVideoSchema);
 
+// ----------------------------
+// Helper: getOrCreateSettings
+// ----------------------------
+async function getOrCreateSettings(ownerId) {
+  let settings = await SystemSettings.findOne({ ownerId });
+  if (!settings) {
+    settings = await SystemSettings.create({
+      ownerId,
+      // defaults are applied by schema
+    });
+    await addLog(ownerId, "Created default system settings", "settings");
+    emitToOwner(ownerId, "settings:created", settings);
+  }
+  return settings;
+}
+
+// ----------------------------
+// Routes: GET/PUT /api/settings
+// and section-specific endpoints
+// ----------------------------
+app.get("/api/settings", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const ownerId = req.user.firebaseUid;
+    const settings = await getOrCreateSettings(ownerId);
+    res.json(settings);
+  } catch (err) {
+    console.error("GET /api/settings error:", err);
+    res.status(500).json({ message: "Failed to fetch settings" });
+  }
+});
+
+app.put("/api/settings", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const ownerId = req.user.firebaseUid;
+    const incoming = req.body || {};
+
+    const settings = await getOrCreateSettings(ownerId);
+
+    // Merge top-level sections if present
+    const merged = {
+      ...settings.toObject(),
+      ...incoming,
+      updatedAt: new Date(),
+    };
+
+    // Avoid overwriting ownerId/_id
+    delete merged._id;
+    delete merged.ownerId;
+
+    // Apply merged fields to document
+    Object.keys(merged).forEach((k) => {
+      settings[k] = merged[k];
+    });
+
+    await settings.save();
+
+    await addLog(ownerId, "Updated system settings", "settings");
+    emitToOwner(ownerId, "settings:updated", settings);
+
+    res.json({ message: "Settings updated", settings });
+  } catch (err) {
+    console.error("PUT /api/settings error:", err);
+    res.status(500).json({ message: "Failed to update settings" });
+  }
+});
+
+/* Section-specific getters / updaters */
+const VALID_SECTIONS = ["websocket", "notifications", "workflows", "employees"];
+
+app.get("/api/settings/:section", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const section = req.params.section;
+    if (!VALID_SECTIONS.includes(section)) return res.status(400).json({ message: "Invalid section" });
+
+    const settings = await getOrCreateSettings(req.user.firebaseUid);
+    res.json({ [section]: settings[section] || {} });
+  } catch (err) {
+    console.error("GET /api/settings/:section error:", err);
+    res.status(500).json({ message: "Failed to fetch section" });
+  }
+});
+
+app.put("/api/settings/:section", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const section = req.params.section;
+    if (!VALID_SECTIONS.includes(section)) return res.status(400).json({ message: "Invalid section" });
+
+    const payload = req.body || {};
+    const settings = await getOrCreateSettings(req.user.firebaseUid);
+
+    // Simple shallow merge for the section
+    settings[section] = { ...(settings[section] ? settings[section].toObject ? settings[section].toObject() : settings[section] : {}), ...payload };
+    settings.updatedAt = new Date();
+    await settings.save();
+
+    await addLog(req.user.firebaseUid, `Updated settings:${section}`, "settings");
+    emitToOwner(req.user.firebaseUid, `settings:${section}:updated`, { section: settings[section] });
+
+    res.json({ message: "Section updated", section: settings[section] });
+  } catch (err) {
+    console.error("PUT /api/settings/:section error:", err);
+    res.status(500).json({ message: "Failed to update section" });
+  }
+});
+
+// ----------------------------
+// WebSocket test endpoint
+// ----------------------------
+app.post("/api/settings/ws/test", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const ownerId = req.user.firebaseUid;
+    const settings = await getOrCreateSettings(ownerId);
+
+    // testEvent payload
+    const payload = {
+      ts: new Date(),
+      message: req.body?.message || "WebSocket test event",
+      type: "ws:test",
+      settingsSnapshot: settings.websocket,
+    };
+
+    // Emits using existing helper - channels clients can subscribe to `${ownerId}:...`
+    emitToOwner(ownerId, `${settings.websocket.testChannelPrefix || "test"}:event`, payload);
+    await addLog(ownerId, "Sent websocket test event", "websocket");
+
+    res.json({ message: "Test event emitted", payload });
+  } catch (err) {
+    console.error("POST /api/settings/ws/test error:", err);
+    res.status(500).json({ message: "Failed to send test event" });
+  }
+});
+
+// ----------------------------
+// Convenience: apply settings on server runtime (example)
+// - This demonstrates how to react to settings changes server-side.
+// - Here we subscribe to change stream and log when websocket toggled.
+// ----------------------------
+try {
+  // only if Mongo supports change streams (replica set); wrap in try/catch
+  if (mongoose.connection && mongoose.connection.db) {
+    const changeStream = SystemSettings.watch([], { fullDocument: "updateLookup" });
+    changeStream.on("change", (change) => {
+      try {
+        const full = change.fullDocument;
+        if (!full) return;
+        // Example: log when websocket.enabled flips
+        // (You can extend this to enable/disable server-side broadcast loops etc.)
+        if (change.updateDescription?.updatedFields?.["websocket.enabled"] !== undefined) {
+          console.log(`SystemSettings websocket.enabled changed for owner ${full.ownerId}:`, full.websocket.enabled);
+          addLog(full.ownerId, `WebSocket ${full.websocket.enabled ? "enabled" : "disabled"}`, "settings").catch(()=>{});
+        }
+      } catch (e) {
+        console.error("SystemSettings change handler error:", e);
+      }
+    });
+  }
+} catch (err) {
+  console.warn("SystemSettings change stream not started (not a replica set?)", err.message);
+}
 /* ----------------------------------------
    CLOUDINARY
 ---------------------------------------- */
