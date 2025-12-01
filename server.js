@@ -988,6 +988,34 @@ app.get("/api/employees", authenticate, requireAdmin, async (req, res) => {
   }
 });
 
+/* =====================================================
+   EMPLOYEE — GET ASSIGNED SOPs
+   /api/employee/sops
+===================================================== */
+app.get("/api/employee/sops", authenticate, async (req, res) => {
+  try {
+    // must be employee only
+    if (!req.user.isEmployee) {
+      return res.status(403).json({ message: "Employees only" });
+    }
+
+    // find this employee
+    const emp = await Employee.findOne({ firebaseUid: req.user.firebaseUid });
+    if (!emp) return res.status(404).json({ message: "Employee not found" });
+
+    // get SOPs where this employee is assigned
+    const sops = await SOP.find({
+      ownerId: emp.ownerId,
+      assignedTo: emp._id,       // 👈 the IMPORTANT FILTER
+    }).sort({ updated: -1 });
+
+    res.json(sops);
+  } catch (err) {
+    console.error("EMPLOYEE SOP LOAD ERROR:", err);
+    res.status(500).json({ message: "Failed to load employee SOPs" });
+  }
+});
+
 /* ----------------------------------------
    DELETE EMPLOYEE
 ---------------------------------------- */
