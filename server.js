@@ -1224,15 +1224,16 @@ app.get("/api/stats", authenticate, requireAdmin, async (req, res) => {
     // EMPLOYEES
     const employees = await Employee.countDocuments({ ownerId });
 
-    // TRAININGS
+    // ACTIVE TRAININGS (videos created by admin)
     const activeTrainings = await TrainingVideo.countDocuments({
       ownerId,
       status: "active",
     });
 
-    const completedTrainings = await TrainingVideo.countDocuments({
+    // ⭐ FIX: COMPLETED TRAININGS (by employees)
+    const completedTrainings = await EmployeeTrainingProgress.countDocuments({
       ownerId,
-      status: "completed",
+      completed: true,
     });
 
     // SOP TOTALS
@@ -1251,7 +1252,7 @@ app.get("/api/stats", authenticate, requireAdmin, async (req, res) => {
     res.json({
       employees,
       activeTrainings,
-      completedTrainings,
+      completedTrainings, // ⭐ FIXED
       completedSOPs,
       pendingSOPs,
     });
@@ -1260,6 +1261,7 @@ app.get("/api/stats", authenticate, requireAdmin, async (req, res) => {
     res.status(500).json({ message: "Failed to fetch stats" });
   }
 });
+
 
 app.get("/api/users/me", authenticate, async (req, res) => {
   const user = await User.findOne({ firebaseUid: req.user.firebaseUid });
