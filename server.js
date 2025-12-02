@@ -947,6 +947,33 @@ app.get("/api/employee/training", authenticate, async (req, res) => {
   }
 });
 
+app.post("/api/users/register-admin", authenticate, async (req, res) => {
+  try {
+    const { firebaseUid, email } = req.user;
+
+    let user = await User.findOne({ firebaseUid });
+
+    // If user already exists but no role, make him admin
+    if (user) {
+      user.role = "admin";
+      await user.save();
+      return res.json({ ok: true, message: "Admin role updated" });
+    }
+
+    // Create new admin
+    user = await User.create({
+      firebaseUid,
+      email,
+      role: "admin",
+    });
+
+    res.json({ ok: true, message: "Admin registered", user });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ message: "Failed to register admin" });
+  }
+});
+
 
 // app.post("/api/training", authenticate, requireAdmin, async (req, res) => {
 //   try {
