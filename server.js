@@ -1278,8 +1278,10 @@ app.get("/api/stats", authenticate, async (req, res) => {
   try {
     const ownerId = req.user.firebaseUid;
 
+    // Employees count
     const employees = await Employee.countDocuments({ ownerId });
 
+    // Trainings
     const activeTrainings = await TrainingVideo.countDocuments({
       ownerId,
       status: "active",
@@ -1290,19 +1292,34 @@ app.get("/api/stats", authenticate, async (req, res) => {
       status: "completed",
     });
 
-    const totalSops = await SOP.countDocuments({ ownerId });
+    // All SOPs
+    const sops = await SOP.find({ ownerId });
+
+    const totalSops = sops.length;
+
+    // ---------- NEW: Pending SOP LOGIC ----------
+    const pendingSOPs = sops.filter((sop) => {
+      const assigned = sop.assignedTo || [];
+      const completed = sop.completedBy || [];
+
+      // Pending means: assigned employee NOT completed
+      return assigned.some((empId) => !completed.includes(empId));
+    }).length;
+    // --------------------------------------------
 
     res.json({
       employees,
       activeTrainings,
       completedTrainings,
       totalSops,
+      pendingSOPs, // 👈 added
     });
   } catch (err) {
     console.error("Stats error:", err);
     res.status(500).json({ message: "Failed to fetch stats" });
   }
 });
+
 
 
 
