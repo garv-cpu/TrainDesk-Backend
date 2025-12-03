@@ -598,6 +598,12 @@ async function authenticate(req, res, next) {
   }
 }
 
+function requireAdmin(req, res, next) {
+  return req.user.role === "admin"
+    ? next()
+    : res.status(403).json({ message: "Admin only" });
+}
+
 
 /* ----------------------------------------
    LOG + WEBSOCKET BROADCAST
