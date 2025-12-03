@@ -571,21 +571,23 @@ async function authenticate(req, res, next) {
   try {
     const decoded = await verifyFirebaseToken(token);
 
-    // FIRST try to match employee
-    let emp = await Employee.findOne({ firebaseUid: decoded.user_id });
+    // Check employee first
+    const emp = await Employee.findOne({ firebaseUid: decoded.user_id });
 
     if (emp) {
-      req.user = { ...emp.toObject(), isEmployee: true };
+      req.user = { ...emp.toObject(), role: "employee", isEmployee: true };
       return next();
     }
 
-    // otherwise match admin user
+    // Check admin user
     let user = await User.findOne({ firebaseUid: decoded.user_id });
 
+    // Create admin user if first time
     if (!user) {
       user = await new User({
         firebaseUid: decoded.user_id,
         email: decoded.email,
+        role: "admin", // <-- IMPORTANT
       }).save();
     }
 
@@ -596,11 +598,6 @@ async function authenticate(req, res, next) {
   }
 }
 
-function requireAdmin(req, res, next) {
-  return req.user.role === "admin"
-    ? next()
-    : res.status(403).json({ message: "Admin only" });
-}
 
 /* ----------------------------------------
    LOG + WEBSOCKET BROADCAST
