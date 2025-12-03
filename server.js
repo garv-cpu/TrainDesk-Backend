@@ -1170,48 +1170,46 @@ app.get("/api/search", authenticate, async (req, res) => {
    EMPLOYEE CREATION
 ---------------------------------------- */
 app.post("/api/employees", authenticate, requireAdmin, async (req, res) => {
-  const { name, email, dept } = req.body;
-
-  if (!name || !email || !dept)
-    return res.status(400).json({ message: "Missing fields" });
-
-  let firebaseUid = null;
-
-  if (!firebaseAdminInitialized) {
-    return res
-      .status(400)
-      .json({ message: "Firebase admin not initialized on server" });
-  }
-
-  let fbUser = null;
-
   try {
-    fbUser = await admin.auth().getUserByEmail(email);
-  } catch { }
+    const { name, email, dept } = req.body;
 
-  if (!fbUser) {
-    fbUser = await admin.auth().createUser({
+    if (!name || !email || !dept)
+      return res.status(400).json({ message: "Missing fields" });
+
+    if (!firebaseAdminInitialized) {
+      return res.status(500).json({ message: "Firebase Admin not initialized" });
+    }
+
+    let fbUser;
+
+    try {
+      fbUser = await admin.auth().getUserByEmail(email);
+    } catch (err) {
+      fbUser = await admin.auth().createUser({
+        email,
+        password: "Temp" + Math.floor(1000 + Math.random() * 9000),
+      });
+    }
+
+    const emp = await new Employee({
+      ownerId: req.user.firebaseUid,
+      firebaseUid: fbUser.uid,
+      name,
       email,
-      password: "Temp" + Math.floor(1000 + Math.random() * 9000),
+      dept,
+    }).save();
+
+    res.json({
+      message: "Employee created",
+      tempPassword: fbUser.password, // optional
+      emp,
     });
+  } catch (error) {
+    console.error("CREATE EMPLOYEE ERROR:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
   }
-
-  firebaseUid = fbUser.uid;
-
-  const emp = await new Employee({
-    ownerId: req.user.firebaseUid,
-    firebaseUid,
-    name,
-    email,
-    dept,
-  }).save();
-
-  await addLog(req.user.firebaseUid, `Employee added: ${name}`, "employee");
-
-  emitToOwner(req.user.firebaseUid, "employee:created", emp);
-
-  res.json({ message: "Employee created", emp });
 });
+
 
 /* ----------------------------------------
    SOP CRUD
