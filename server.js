@@ -255,6 +255,7 @@ const TrainingVideoSchema = new mongoose.Schema({
 const EmployeeProgressSchema = new mongoose.Schema({
   employeeId: String,
   videoId: String,
+  progressPercent: { type: Number, default: 0 },
   completed: Boolean,
   updatedAt: { type: Date, default: Date.now },
 });
@@ -1268,6 +1269,112 @@ app.get("/api/admin/training-breakdown", authenticate, requireAdmin, async (req,
   } catch (err) {
     console.error("Breakdown error:", err);
     res.status(500).json({ message: "Failed to fetch breakdown" });
+  }
+});
+
+app.post("/api/employee/training/progress", authenticate, async (req, res) => {
+  try {
+    const employeeUid = req.user.firebaseUid;
+    const { videoId, percent } = req.body;
+
+    if (!videoId) return res.status(400).json({ message: "Missing videoId" });
+
+    let progress = await EmployeeProgress.findOne({ employeeId: employeeUid, videoId });
+
+    if (!progress) {
+      progress = await EmployeeProgress.create({
+        employeeId: employeeUid,
+        videoId,
+        progressPercent: percent,
+      });
+    } else {
+      progress.progressPercent = percent;
+      progress.updatedAt = new Date();
+      await progress.save();
+    }
+
+    // 🔵 If progress is below 100 — Log viewing status
+    if (percent < 100) {
+      const employee = await Employee.findOne({ firebaseUid: employeeUid });
+      const video = await TrainingVideo.findById(videoId);
+
+      await addLog(employee.ownerId,
+        `${employee.name} viewed ${percent}% of "${video.title}"`,
+        "training-progress"
+      );
+
+      emitToOwner(employee.ownerId, "training:progress", {
+        employee: employee.name,
+        video: video.title,
+        percent,
+      });
+    }
+
+    res.json({ message: "Progress updated" });
+
+  } catch (err) {
+    console.error("Progress update error:", err);
+    res.status(500).json({ message: "Failed to update progress" });
+  }
+});
+
+app.get("/api/employee/progress/:id", authenticate, async (req, res) => {
+  const data = await EmployeeProgress.findOne({
+    employeeId: req.user.firebaseUid,
+    videoId: req.params.id,
+  });
+
+  res.json(data || { completed: false, percent: 0 });
+});
+
+app.post("/api/employee/training/complete", authenticate, async (req, res) => {
+  try {
+    const { videoId } = req.body;
+    const employeeUid = req.user.firebaseUid;
+
+    const employee = await Employee.findOne({ firebaseUid: employeeUid });
+    const video = await TrainingVideo.findById(videoId);
+
+    if (!employee || !video) {
+      return res.status(404).json({ message: "Invalid employee or video" });
+    }
+
+    // update employee progress
+    await EmployeeProgress.findOneAndUpdate(
+      { employeeId: employeeUid, videoId },
+      { completed: true, progressPercent: 100, updatedAt: new Date() },
+      { upsert: true }
+    );
+
+    // update video completedBy
+    if (!video.completedBy.includes(employeeUid)) {
+      video.completedBy.push(employeeUid);
+      await video.save();
+    }
+
+    // update employee completedTrainings
+    if (!employee.completedTrainings.includes(videoId)) {
+      employee.completedTrainings.push(videoId);
+      await employee.save();
+    }
+
+    // 🔵 LOG
+    await addLog(employee.ownerId,
+      `${employee.name} completed "${video.title}"`,
+      "training"
+    );
+
+    // 🔵 WEBSOCKET PUSH
+    emitToOwner(employee.ownerId, "training:completed", {
+      employee: employee.name,
+      video: video.title,
+    });
+
+    res.json({ message: "Training completed" });
+
+  } catch (err) {
+    console.error("Training complete error:", err);
+    res.status(500).json({ message: "Failed to complete training" });
   }
 });
 
