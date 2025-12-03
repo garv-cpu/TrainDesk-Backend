@@ -1248,6 +1248,41 @@ app.delete("/api/sops/:id", authenticate, requireAdmin, async (req, res) => {
    ADMIN DASHBOARD STATS
 ---------------------------------------- */
 
+app.get("/api/admin/training/progress", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const ownerId = req.user.firebaseUid;
+
+    const employees = await Employee.find({ ownerId });
+    const videos = await TrainingVideo.find({ ownerId });
+
+    const progress = await EmployeeProgress.find({
+      ownerId,
+    }).lean();
+
+    const result = progress.map((p) => {
+      const emp = employees.find((e) => e._id.toString() === p.employeeId);
+      const vid = videos.find((v) => v._id.toString() === p.videoId);
+
+      return {
+        _id: p._id,
+        employeeName: emp?.name || "Unknown",
+        employeeEmail: emp?.email || "",
+        videoTitle: vid?.title || "Unknown Video",
+        percent: p.percent || 0,
+        completed: p.completed || false,
+        score: p.score || null,
+        updatedAt: p.updatedAt,
+      };
+    });
+
+
+    res.json(result);
+  } catch (err) {
+    console.error("ADMIN PROGRESS LIST ERROR:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 app.get("/api/admin/training-breakdown", authenticate, requireAdmin, async (req, res) => {
   try {
     const ownerId = req.user.firebaseUid;
