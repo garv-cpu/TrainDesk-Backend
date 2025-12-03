@@ -879,6 +879,30 @@ app.post("/api/training/:id/complete", authenticate, async (req, res) => {
 
     await training.save();
 
+    // Create or update EmployeeProgress entry
+    let progressEntry = await EmployeeProgress.findOne({
+      ownerId: emp.ownerId,
+      employeeId: emp._id.toString(),
+      videoId: training._id.toString(),
+    });
+
+    if (!progressEntry) {
+      progressEntry = new EmployeeProgress({
+        ownerId: emp.ownerId,
+        employeeId: emp._id.toString(),
+        videoId: training._id.toString(),
+        percent: 100,
+        completed: true,
+        score: null,
+      });
+    } else {
+      progressEntry.percent = 100;
+      progressEntry.completed = true;
+    }
+
+    await progressEntry.save();
+
+
     if (!emp.completedTrainings.includes(training._id)) {
       emp.completedTrainings.push(training._id);
       await emp.save();
